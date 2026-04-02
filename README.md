@@ -23,9 +23,27 @@ python3 installer.py hyplass_env
 hyplas --help
 ```
 
+### Container images (Seqera Wave)
+
+HyPlAs can be run with the following pinned Wave images:
+
+- Docker:
+  `community.wave.seqera.io/library/blast_diamond_hmmer_infernal_pruned:24ef3c0eea00bdb8`
+- Apptainer/Singularity (ORAS):
+  `oras://community.wave.seqera.io/library/blast_diamond_hmmer_infernal_pruned:b4a936a29579bed2`
+
+Pull examples:
+```bash
+docker pull community.wave.seqera.io/library/blast_diamond_hmmer_infernal_pruned:24ef3c0eea00bdb8
+apptainer pull hyplas_wave.sif oras://community.wave.seqera.io/library/blast_diamond_hmmer_infernal_pruned:b4a936a29579bed2
+```
+
+These refs are immutable/pinned and recommended for reproducible runs.
+
 ## Overview
 
-HyPlAs  is a pipeline combinig existing tools and specific Python scripts and C++ programs. HyPlAs is composed of
+HyPlAs is a pipeline combining existing tools and C++ utilities. The legacy Python entrypoint is deprecated in favor of `hyplas-pipeline`.
+HyPlAs is composed of
 the following steps (see figure below): 
 1. Reads preprocessing;  
 	1.a. Short reads are preprocessed with <a href="https://github.com/OpenGene/fastp">fastp</a>,  
@@ -41,9 +59,11 @@ the following steps (see figure below):
 ![HyPlAs](resources/HyPlAs_pipeline.png?raw=true)
 
 ## Usage
-```bu
-python src/hyplas.py --platon-db db -s sr_*.fastq -l lr.fastq.gz -o hyplass-out/ -t threads -p prop_rounds      
+```bash
+hyplas-pipeline --platon-db db -s sr_1.fastq sr_2.fastq -l lr.fastq.gz -o hyplas-out -t 16 -p 2
 ```
+
+Legacy (deprecated): `python src/hyplas/hyplas.py ...`
 ### Input
  - --platon-db: Database used by Platon (<a href="https://zenodo.org/record/4066768/files/db.tar.gz">https://zenodo.org/record/4066768/files/db.tar.gz</a>)
  ```
@@ -79,7 +99,7 @@ rm db.tar.gz
 
 ### Run HyPlAs
 ```
-hyplas -l SRR10173103.qc.fastq.gz -s SRR3666207_1.qc.fastq SRR3666207_2.qc.fastq -p2 -o hyplas_outdir --platon-db db -t 64
+hyplas-pipeline -l SRR10173103.qc.fastq.gz -s SRR3666207_1.qc.fastq SRR3666207_2.qc.fastq -p 2 -o hyplas_outdir --platon-db db -t 64
 ```
 
 ### Output

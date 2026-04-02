@@ -1,6 +1,6 @@
 /**
  * @file hyplas_main.cpp
- * @brief HyPlAs pipeline orchestrator - main entry point
+ * @brief HyPlAs - Hybrid Plasmid Assembly pipeline
  */
 
 #include "CLI11.hpp"
@@ -60,13 +60,12 @@ int main(int argc, char* argv[]) {
     
     // Assembly options
     app.add_flag("--use-spades", config.use_spades,
-        "Use SPAdes directly for SR assembly instead of Unicycler (default: -k 53 --gfa11 --isolate -m 1024)");
+        "Use SPAdes directly for SR assembly instead of Unicycler");
     
     // Parse with allow_extras to handle --check-deps before validation
     try {
         app.parse(argc, argv);
     } catch (const CLI::ParseError& e) {
-        // If --check-deps was given, run it anyway
         if (check_deps) {
             return hyplas::check_dependencies(config.use_spades);
         }

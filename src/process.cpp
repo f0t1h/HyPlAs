@@ -4,13 +4,14 @@
  */
 
 #include "process.hpp"
+#include "file_utils.hpp"
 
 #include <cerrno>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
-#include <signal.h>
+#include <csignal>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -53,7 +54,9 @@ std::string RunResult::error_summary() const {
 std::string format_command(const std::vector<std::string>& args) {
     std::string result;
     for (size_t i = 0; i < args.size(); ++i) {
-        if (i > 0) result += ' ';
+        if (i > 0) {
+            result += ' ';
+        }
         
         // Check if quoting is needed
         bool needs_quote = false;
@@ -116,14 +119,12 @@ std::optional<std::filesystem::path> which(const std::string& name) {
         }
         
         start = end + 1;
-        if (start > path_str.size()) break;
+        if (start > path_str.size()) {
+            break;
+        }
     }
     
     return std::nullopt;
-}
-
-bool tool_exists(const std::string& name) {
-    return which(name).has_value();
 }
 
 bool validate_tools(const std::vector<std::string>& tools, bool verbose) {
@@ -259,7 +260,7 @@ RunResult run(const std::vector<std::string>& args, const RunOptions& opts) {
         char buffer[4096];
         ssize_t bytes_read;
         while ((bytes_read = read(stderr_pipe[0], buffer, sizeof(buffer))) > 0) {
-            result.stderr_output.append(buffer, bytes_read);
+            result.stderr_output.append(buffer, static_cast<size_t>(bytes_read));
         }
         close(stderr_pipe[0]);
     }
@@ -282,28 +283,26 @@ RunResult run(const std::vector<std::string>& args, const RunOptions& opts) {
     return result;
 }
 
-void run_or_die(const std::vector<std::string>& args,
-                const std::string& stage_context,
-                const RunOptions& opts) {
+Result run_cmd(const std::vector<std::string>& args,
+               const std::string& stage_context,
+               const RunOptions& opts) {
     if (args.empty()) {
-        std::fprintf(stderr, "[ERROR] [%s] Empty command\n", stage_context.c_str());
-        std::exit(EXIT_FAILURE);
+        return Result(EXIT_FAILURE).with_error("empty command");
     }
-    
-    // Log the command being run
-    std::fprintf(stderr, "[INFO] [%s] Running: %s\n", 
-                stage_context.c_str(), 
-                format_command(args).c_str());
-    
-    auto result = run(args, opts);
-    
-    if (!result.success()) {
-        std::fprintf(stderr, "\n[ERROR] [%s] Command failed: %s\n",
-                    stage_context.c_str(),
-                    format_command(args).c_str());
-        std::fprintf(stderr, "[ERROR] %s\n", result.error_summary().c_str());
-        std::exit(EXIT_FAILURE);
+
+    std::fprintf(stderr, "[INFO] [%s] Running: %s\n",
+                 stage_context.c_str(),
+                 format_command(args).c_str());
+
+    auto run_result = run(args, opts);
+    Result result(run_result.success() ? 0 : EXIT_FAILURE);
+    if (!run_result.success()) {
+        result.with_error(run_result.error_summary());
     }
+    if (!run_result.stderr_output.empty()) {
+        result.with_stderr(run_result.stderr_output);
+    }
+    return result;
 }
 
 } // namespace hyplas

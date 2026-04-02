@@ -12,6 +12,8 @@
 #ifndef HYPLAS_PROCESS_HPP
 #define HYPLAS_PROCESS_HPP
 
+#include "file_utils.hpp"
+
 #include <filesystem>
 #include <optional>
 #include <string>
@@ -73,29 +75,14 @@ struct RunOptions {
                             const RunOptions& opts = {});
 
 /**
- * @brief Execute a subprocess, abort with error message on failure
- * 
- * Convenience wrapper that calls run() and exits with clear error message
- * if the command fails. Use this for pipeline stages where failure should
- * stop the entire pipeline.
- * 
- * @param args Command and arguments
- * @param stage_context Description of pipeline stage (for error messages)
- * @param opts Execution options
- * 
- * @note Calls std::exit(EXIT_FAILURE) on failure
+ * @brief Run command and return chainable Result
+ *
+ * Logs the command using a unified format and maps subprocess status
+ * into Result for expect_file().or_die() style chaining.
  */
-void run_or_die(const std::vector<std::string>& args,
-                const std::string& stage_context,
-                const RunOptions& opts = {});
-
-/**
- * @brief Check if a tool exists in PATH
- * 
- * @param name Tool name (not a path)
- * @return true if the tool is found and executable
- */
-[[nodiscard]] bool tool_exists(const std::string& name);
+[[nodiscard]] Result run_cmd(const std::vector<std::string>& args,
+                             const std::string& stage_context,
+                             const RunOptions& opts = {});
 
 /**
  * @brief Get the full path to a tool in PATH

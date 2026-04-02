@@ -295,7 +295,7 @@ def run_long_read_selection(args, prediction_path, graph_alignment_path):
         :param graph_alignment_path: path to the graph alignment file
         :return: tuple[str, str, str, str] paths to plasmid, unknown(neither plasmid or chr), unknown(both plasmid and chr) and unmapped reads.
     """
-    if validate_tool("split_plasmid_reads", SpecifierSet(">0"), version_cmd="", version_split_lambda=lambda x:"1"):
+    if validate_tool("hyplas-utils", SpecifierSet(">0"), version_cmd="--help", version_split_lambda=lambda x:"1"):
         exit(1)
     
     plasmid_long_reads_path = f"{args.output_directory}/plasmid_long_reads"
@@ -310,25 +310,21 @@ def run_long_read_selection(args, prediction_path, graph_alignment_path):
         logger.warning(f"{plasmid_output} and {unknown_output_both} exists!. not running it again. Delete the files or use --force")
         return plasmid_output, unknown_output_both, unknown_output_neit, unmapped_output
 
-
-
-
     split_plasmid_read_cmd = [
-            "split_plasmid_reads",
-            graph_alignment_path,
-            args.long_reads,
-            prediction_path,
-            plasmid_output,
-            "skip",
-            unknown_output_neit,
-            unknown_output_both,
-            unmapped_output,
+            "hyplas-utils", "split-plasmid-reads",
+            "-g", graph_alignment_path,
+            "-f", args.long_reads,
+            "-t", prediction_path,
+            "-p", plasmid_output,
+            "-n", unknown_output_neit,
+            "-b", unknown_output_both,
+            "-u", unmapped_output,
     ]
     print(" ".join(split_plasmid_read_cmd), file=sys.stderr)
-    ret = subprocess.run( split_plasmid_read_cmd)
+    ret = subprocess.run(split_plasmid_read_cmd)
 
     if ret.returncode != 0:
-        logger.error(f"split_plasmid_reads failed to finish. Please check its logs at {args.output_directory}/split_plasmid_reads.log\nWas running {' '.join(split_plasmid_read_cmd)}")
+        logger.error(f"split-plasmid-reads failed to finish. Please check its logs at {args.output_directory}/split_plasmid_reads.log\nWas running {' '.join(split_plasmid_read_cmd)}")
         exit(-1)
 
     return plasmid_output, unknown_output_neit, unknown_output_both, unmapped_output
@@ -380,7 +376,7 @@ def find_missing_long_reads(args, plasmid_files_list, unknown_files): #TODO Conv
     if not args.force and os.path.isfile(minimap_output_path):
         logger.warning(f"{minimap_output_path} exists!. not running it again. Delete the files or use --force")
         return minimap_output_path
-    if validate_tool("innotin", SpecifierSet(">0"), version_cmd="", version_split_lambda=lambda x:"1"):
+    if validate_tool("hyplas-utils", SpecifierSet(">0"), version_cmd="--help", version_split_lambda=lambda x:"1"):
         exit(1)
     if validate_tool("minimap2", MINIMAP2_VERSION_SPEC, version_split_lambda=lambda x:x):
         exit(1)
@@ -398,7 +394,7 @@ def find_missing_long_reads(args, plasmid_files_list, unknown_files): #TODO Conv
     tfw.close()
 
     innotin_cmd = [
-            "innotin",
+            "hyplas-utils", "innotin",
             tfw.name,
             *plasmid_files_list
     ]
@@ -443,7 +439,7 @@ def extract_missing_long_reads(args, plasmid_alignment, graph_alignment_path, pr
     if not args.force and os.path.isfile(extracted_lr_fastq):
         logger.warning(f"{extracted_lr_fastq} exists!. not running it again. Delete the files or use --force")
         return extracted_lr_fastq
-    if validate_tool("select_missing_reads", SpecifierSet(">0"), version_cmd="", version_split_lambda=lambda x:"1"):
+    if validate_tool("hyplas-utils", SpecifierSet(">0"), version_cmd="--help", version_split_lambda=lambda x:"1"):
         exit(1)
     
 
@@ -456,12 +452,12 @@ def extract_missing_long_reads(args, plasmid_alignment, graph_alignment_path, pr
     ret = subprocess.run(cat_reads_cmd, stdout = tfw, stderr=sys.stderr)
     tfw.close()
     smr_cmd = [
-            "select_missing_reads",
-            plasmid_alignment,
-            graph_alignment_path,
-            tfw.name,
-            extracted_lr_fastq,
-            prediction_tsv_path
+            "hyplas-utils", "select-missing-reads",
+            "-p", plasmid_alignment,
+            "-g", graph_alignment_path,
+            "-f", tfw.name,
+            "-o", extracted_lr_fastq,
+            "-t", prediction_tsv_path
     ]
 
     ret = subprocess.run(smr_cmd)
@@ -503,6 +499,12 @@ def fix_gfa_empty_segments(gfa_path, out_path):
                     print(f"L\t{i[0]}\t{i[1]}\t{o[0]}\t{o[1]}\t0M", file=hand)
 
 def main():
+    print(
+        "[DEPRECATED] The Python pipeline entrypoint (src/hyplas/hyplas.py) is deprecated. "
+        "Please use `hyplas-pipeline` instead.",
+        file=sys.stderr,
+    )
+
     parser = argparse.ArgumentParser()
     parser.add_argument("-l","--long-reads",help="long reads fastq file")
     parser.add_argument("-s","--short-reads",help="short reads fastq files",nargs="+",default=[])

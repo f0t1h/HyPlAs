@@ -37,6 +37,161 @@ namespace hyplas {
 }
 
 /**
+ * @brief Check if a file exists, is readable, and is non-empty
+ */
+[[nodiscard]] inline bool file_non_empty(const std::filesystem::path& p) {
+    return file_readable(p) && std::filesystem::file_size(p) > 0;
+}
+
+/**
+ * @brief Check if a file has gzip magic bytes (1f 8b)
+ */
+[[nodiscard]] inline bool file_is_gzipped(const std::filesystem::path& p) {
+    if (!file_readable(p)) return false;
+    FILE* f = std::fopen(p.c_str(), "rb");
+    if (!f) return false;
+    unsigned char magic[2] = {0, 0};
+    std::fread(magic, 1, 2, f);
+    std::fclose(f);
+    return magic[0] == 0x1f && magic[1] == 0x8b;
+}
+
+/**
+ * @brief Get the first content byte of a file (handles gzip transparently)
+ * @return First byte, or -1 on error/empty
+ */
+[[nodiscard]] inline int file_first_byte(const std::filesystem::path& p) {
+    if (!file_readable(p)) return -1;
+    gzFile gz = gzopen(p.c_str(), "rb");
+    if (!gz) return -1;
+    int ch = gzgetc(gz);
+    gzclose(gz);
+    return ch;
+}
+
+/**
+ * @brief Check if file starts with FASTQ header (@ as first char)
+ * Works with both plain and gzipped files.
+ */
+[[nodiscard]] inline bool file_is_fastq(const std::filesystem::path& p) {
+    return file_first_byte(p) == '@';
+}
+
+/**
+ * @brief Check if file starts with FASTA header (> as first char)
+ * Works with both plain and gzipped files.
+ */
+[[nodiscard]] inline bool file_is_fasta(const std::filesystem::path& p) {
+    return file_first_byte(p) == '>';
+}
+
+// ============================================================================
+// File expectation flags for Result::expect_file()
+// ============================================================================
+
+enum class Expect : unsigned {
+    EXISTS      = 0,        // File exists and is readable (default)
+    NON_EMPTY   = 1 << 0,   // File size > 0
+    GZIPPED     = 1 << 1,   // Has gzip magic bytes
+    FASTQ       = 1 << 2,   // Starts with '@' (FASTQ header)
+    FASTA       = 1 << 3,   // Starts with '>' (FASTA header)
+};
+
+constexpr Expect operator|(Expect a, Expect b) {
+    return static_cast<Expect>(static_cast<unsigned>(a) | static_cast<unsigned>(b));
+}
+
+constexpr bool has_flag(Expect flags, Expect flag) {
+    return (static_cast<unsigned>(flags) & static_cast<unsigned>(flag)) != 0;
+}
+
+/**
+ * @brief Rust-style Result for chaining command execution and file validation
+ * 
+ * Usage (external commands):
+ *   run_cmd({"minigraph", graph.string(), reads.string()}, "minigraph alignment", opts)
+ *       .expect_file(output, Expect::NON_EMPTY)
+ *       .or_die("minigraph alignment");
+ * 
+ * Usage (internal subprograms):
+ *   Result(run_split_plasmid_reads(params))
+ *       .expect_file(output1, Expect::NON_EMPTY | Expect::GZIPPED | Expect::FASTQ)
+ *       .expect_file(output2)
+ *       .or_die("split-plasmid-reads");
+ */
+struct Result {
+    int code = 0;
+    std::string error_detail;
+    std::string stderr_capture;  ///< Captured stderr from command (if any)
+    
+    Result(int c) : code(c) {}
+    
+    /// @brief Set captured stderr (for command execution)
+    Result& with_stderr(std::string stderr_out) {
+        stderr_capture = std::move(stderr_out);
+        return *this;
+    }
+    
+    /// @brief Set error detail (for chaining after failure detection)
+    Result& with_error(std::string detail) {
+        error_detail = std::move(detail);
+        return *this;
+    }
+    
+    Result& expect_file(const std::filesystem::path& p, Expect flags = Expect::EXISTS) {
+        if (code != 0) return *this;
+        
+        if (!file_readable(p)) {
+            code = EXIT_FAILURE;
+            error_detail = "missing: " + p.string();
+            return *this;
+        }
+        
+        if (has_flag(flags, Expect::NON_EMPTY) && std::filesystem::file_size(p) == 0) {
+            code = EXIT_FAILURE;
+            error_detail = "empty: " + p.string();
+            return *this;
+        }
+        
+        if (has_flag(flags, Expect::GZIPPED) && !file_is_gzipped(p)) {
+            code = EXIT_FAILURE;
+            error_detail = "not gzipped: " + p.string();
+            return *this;
+        }
+        
+        if (has_flag(flags, Expect::FASTQ) && !file_is_fastq(p)) {
+            code = EXIT_FAILURE;
+            error_detail = "not FASTQ: " + p.string();
+            return *this;
+        }
+        
+        if (has_flag(flags, Expect::FASTA) && !file_is_fasta(p)) {
+            code = EXIT_FAILURE;
+            error_detail = "not FASTA: " + p.string();
+            return *this;
+        }
+        
+        return *this;
+    }
+    
+    void or_die(const std::string& stage) const {
+        if (code != 0) {
+            std::fprintf(stderr, "\n[ERROR] %s failed", stage.c_str());
+            if (!error_detail.empty()) {
+                std::fprintf(stderr, " (%s)", error_detail.c_str());
+            }
+            std::fprintf(stderr, "\n");
+            if (!stderr_capture.empty()) {
+                std::fprintf(stderr, "[ERROR] stderr:\n%s\n", stderr_capture.c_str());
+            }
+            std::exit(EXIT_FAILURE);
+        }
+    }
+    
+    [[nodiscard]] bool ok() const { return code == 0; }
+};
+
+/**
  * @brief Ensure a directory exists, creating if necessary
  * 
  * @throws std::filesystem::filesystem_error on failure

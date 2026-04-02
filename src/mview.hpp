@@ -10,9 +10,6 @@
 #include <string>
 #include <string_view>
 
-#include "pstring.hpp"
-
-
 namespace mview{
 using u64 = uint64_t;
 template<class MM>
@@ -23,51 +20,6 @@ concept mem_mapper_concept = requires(MM m){
   {m.begin()} -> std::random_access_iterator;
   {m.end()} -> std::random_access_iterator;
 };
-
-// template<class K,
-//   class V, 
-//   template<class, class, class, class, class> class MapIMPL=std::unordered_map>
-// struct LruCache {
-
-//   template<class ...Args>
-//   constexpr auto emplace (const K &k, Args...args){
-    
-//   }
-// };
-
-
-
-
-// template<mem_mapper_concept MM>
-// struct lrumm{
-//   struct iterator {};
-//   const std::string filepath;
-//   u64 chunk_size;
-//   u64 cache_size;
-//   u64 elasticity;
-//   LruCache<u64, MM> map_cache;
-//   lrumm(const std::string &filepath, u64 chunk_size, u64 cache_size, u64 elasticity=0) : 
-//     filepath  { filepath},
-//     chunk_size{ chunk_size},
-//     cache_size{ cache_size},
-//     elasticity{ elasticity},
-//     map_cache { cache_size, elasticity}
-//     {}
-//   constexpr u64 get_chunk(u64 idx) const {
-//     return idx / chunk_size;
-//   }
-//   constexpr u64 get_offset(u64 idx) const {
-//     return idx % chunk_size;
-//   }
-//   constexpr auto operator [] (u64 idx) {
-//     u64 chunk = get_chunk(idx);
-//     auto it = map_cache.find(chunk);
-//     if(it==map_cache.end()){
-//       map_cache.emplace(chunk, filepath, chunk*chunk_size, chunk_size);
-//     }
-//     return map_cache[chunk][get_offset(idx)];
-//   }
-// };
 
 template<mem_mapper_concept MM>
 struct memory_view {
@@ -88,7 +40,7 @@ struct memory_view {
       : mmap{mmap}, s{g.s}, e{g.e} {}
   friend std::ostream &operator<<(std::ostream &ost, memory_view &view) {
     for (u64 i = view.s; i < view.e; ++i) {
-      ost << (char)(*view.mmap)[i];
+      ost << static_cast<char>((*view.mmap)[i]);
     }
     return ost;
   }
@@ -98,9 +50,6 @@ struct memory_view {
       return value;
     }
     return -1;
-  }
-  template <int N> operator pistring::pstring<N>() const {
-    return {&(*mmap)[s], &(*mmap)[e]};
   }
   operator std::string() const {
     return {mmap->begin() + s, mmap->begin() + e};

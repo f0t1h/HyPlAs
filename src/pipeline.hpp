@@ -70,7 +70,7 @@ private:
     void setup_from_existing_assembly();
     void setup_from_spades_output();  // Setup from SPAdes GFA output
     std::filesystem::path run_platon_classifier();
-    std::filesystem::path process_platon_output(const std::filesystem::path& platon_dir);
+    std::filesystem::path process_platon_output(const std::filesystem::path& platon_dir) const;
     std::filesystem::path run_minigraph_lr_to_sr();
     ReadSelectionResult run_long_read_selection(
         const std::filesystem::path& prediction_tsv,
@@ -81,21 +81,19 @@ private:
         int round);
     std::filesystem::path extract_missing_long_reads(
         const std::filesystem::path& plasmid_alignment,
-        const std::filesystem::path& graph_alignment,
-        const std::filesystem::path& prediction_tsv,
-        const std::vector<std::filesystem::path>& unknown_reads);
+        const std::vector<std::filesystem::path>& unknown_reads) const;
     std::filesystem::path run_unicycler_lr_assembly(
         const std::vector<std::filesystem::path>& plasmid_files,
         int iteration);
     
     // Helper functions
     void fix_gfa_empty_segments(const std::filesystem::path& input,
-                                const std::filesystem::path& output);
+                                const std::filesystem::path& output) const;
     void remove_gfa_overlaps(const std::filesystem::path& input,
-                             const std::filesystem::path& output);
+                             const std::filesystem::path& output) const;
     void extract_fasta_from_gfa(const std::filesystem::path& gfa,
                                 const std::filesystem::path& fasta,
-                                size_t min_length = 200);
+                                size_t min_length = 200) const;
     void write_circular_contigs(const std::filesystem::path& assembly_fasta,
                                 int iteration);
     void symlink_remaining_iterations(int from_iteration);
@@ -108,6 +106,9 @@ private:
  * - SPAdes: called by Unicycler for short-read assembly
  * - Racon: called by Unicycler for long-read polishing
  * - BLAST+ (makeblastdb, tblastn): called by Unicycler for contig rotation
+ * 
+ * Note: hyplas-utils subprograms (innotin, split-plasmid-reads, select-missing-reads)
+ * are now baked into hyplas-pipeline and no longer require external invocation.
  */
 inline const std::vector<std::string>& required_tools(bool use_spades = false) {
     static const std::vector<std::string> tools_unicycler = {
@@ -116,7 +117,6 @@ inline const std::vector<std::string>& required_tools(bool use_spades = false) {
         "platon",
         "minigraph",
         "minimap2",
-        "hyplas-utils",
         // Unicycler subtools (called internally by Unicycler)
         "spades.py",      // SR assembly
         "racon",          // LR polishing
@@ -130,7 +130,6 @@ inline const std::vector<std::string>& required_tools(bool use_spades = false) {
         "platon",
         "minigraph",
         "minimap2",
-        "hyplas-utils",
         // Unicycler subtools (still needed for hybrid assembly step)
         "racon",
         "makeblastdb",

@@ -7,3 +7,43 @@ build/*
 tmp-build/*
 *.egg-info
 *.log
+
+# Python environments and caches
+.venv/
+venv/
+hyplas_env/
+__pycache__/
+.cache/
+
+# C/C++ build artifacts
+*.o
+*.a
+*.so
+*.dylib
+compile_commands.json
+config.mk
+src/hyplas-utils
+src/hyplas-pipeline
+
+# Local databases and raw sequencing data
+db/
+db.tar.gz
+*.fastq
+*.fq
+*.fastq.gz
+
+# Local test and scratch outputs
+quick_test*/
+spades_test*/
+spades_only_test*/
+subset_test/
+reference_run/
+cpp_run/
+cpp_test_run/
+test_*
+*_test.log
+
+# Agent/editor local state
+.agents/
+.clangd
+skills-lock.json
