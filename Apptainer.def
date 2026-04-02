@@ -1,0 +1,16 @@
+Bootstrap: oras
+From: community.wave.seqera.io/library/blast_diamond_hmmer_infernal_pruned:b4a936a29579bed2
+
+%files
+    external/unicycler-modified-for-hyplas /opt/unicycler-modified-for-hyplas
+
+%post
+    apt-get update && \
+        apt-get install -y --no-install-recommends build-essential python3-dev zlib1g-dev && \
+        rm -rf /var/lib/apt/lists/*
+
+    cd /opt/unicycler-modified-for-hyplas && pip install --no-cache-dir .
+
+%labels
+    Author HyPlAs
+    Description HyPlAs container with unicycler_hyplas_modified
