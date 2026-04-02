@@ -23,22 +23,15 @@ python3 installer.py hyplass_env
 hyplas --help
 ```
 
-### Container images (Seqera Wave)
+### Container images
 
-HyPlAs can be run with the following pinned Wave images:
+HyPlAs containers are built on top of pinned Seqera Wave base images that bundle the bioinformatics dependencies (BLAST, Diamond, HMMER, Infernal, etc.).
 
-- Docker:
-  `community.wave.seqera.io/library/blast_diamond_hmmer_infernal_pruned:24ef3c0eea00bdb8`
-- Apptainer/Singularity (ORAS):
-  `oras://community.wave.seqera.io/library/blast_diamond_hmmer_infernal_pruned:b4a936a29579bed2`
-
-Pull examples:
+Build locally:
 ```bash
-docker pull community.wave.seqera.io/library/blast_diamond_hmmer_infernal_pruned:24ef3c0eea00bdb8
-apptainer pull hyplas_wave.sif oras://community.wave.seqera.io/library/blast_diamond_hmmer_infernal_pruned:b4a936a29579bed2
+docker build -t hyplas:latest .
+apptainer build hyplas.sif Apptainer.def
 ```
-
-These refs are immutable/pinned and recommended for reproducible runs.
 
 ## Overview
 

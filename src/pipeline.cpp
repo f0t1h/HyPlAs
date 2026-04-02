@@ -100,15 +100,16 @@ void Pipeline::log(const std::string& level, const std::string& message) const {
 // ============================================================================
 
 void Pipeline::fix_gfa_empty_segments(const std::filesystem::path& input,
-                                       const std::filesystem::path& output) const {
+                                       const std::filesystem::path& output) {
     std::ifstream in(input);
     std::ofstream out(output);
     
     if (!in || !out) {
+        if (config_.soft_fail) soft_fail_exit();
         log("ERROR", "Cannot open GFA files for empty segment fixing");
         std::exit(EXIT_FAILURE);
     }
-    
+
     std::unordered_set<std::string> empty_segments;
     std::unordered_map<std::string, std::vector<std::pair<std::string, std::string>>> incoming;
     std::unordered_map<std::string, std::vector<std::pair<std::string, std::string>>> outgoing;
@@ -547,6 +548,14 @@ void Pipeline::write_circular_contigs(const std::filesystem::path& assembly_fast
     write_if_circular();
 }
 
+[[noreturn]] void Pipeline::soft_fail_exit() {
+    log("WARNING", "Soft-fail: falling back to circular contigs from SR assembly");
+    auto sr_fasta = output_dir_ / "unicycler_sr" / "assembly.fasta";
+    write_circular_contigs(sr_fasta, 0);
+    symlink_remaining_iterations(0);
+    std::exit(0);
+}
+
 void Pipeline::symlink_remaining_iterations(int from_iteration) {
     auto source = output_dir_ / ("plasmids.final.it" + std::to_string(from_iteration) + ".fasta");
     
@@ -719,12 +728,13 @@ std::filesystem::path Pipeline::run_platon_classifier() {
         unicycler_fasta.string()
     }, "platon classification")
         .expect_file(result_tsv, Expect::NON_EMPTY)
-        .or_die("platon classification");
+        .or_die_if(!config_.soft_fail, "platon classification")
+        .or_execute([this]{ soft_fail_exit(); });
     
     return platon_path;
 }
 
-std::filesystem::path Pipeline::process_platon_output(const std::filesystem::path& platon_dir) const {
+std::filesystem::path Pipeline::process_platon_output(const std::filesystem::path& platon_dir) {
     auto result_tsv = platon_dir / "result.tsv";
     auto output_tsv = platon_dir / "result_p.tsv";
     
@@ -735,6 +745,7 @@ std::filesystem::path Pipeline::process_platon_output(const std::filesystem::pat
     std::ofstream out(output_tsv);
     
     if (!in || !out) {
+        if (config_.soft_fail) soft_fail_exit();
         log("ERROR", "Cannot open Platon result files");
         std::exit(EXIT_FAILURE);
     }
@@ -765,6 +776,7 @@ std::filesystem::path Pipeline::process_platon_output(const std::filesystem::pat
     int rrna_col = col_idx.contains("# rRNAs") ? col_idx["# rRNAs"] : -1;
     
     if (rds_col < 0) {
+        if (config_.soft_fail) soft_fail_exit();
         log("ERROR", "RDS column not found in Platon output");
         std::exit(EXIT_FAILURE);
     }
@@ -851,7 +863,8 @@ std::filesystem::path Pipeline::run_minigraph_lr_to_sr() {
         "-c"
     }, "minigraph LR to SR assembly", opts)
         .expect_file(gaf_output, Expect::NON_EMPTY)
-        .or_die("minigraph LR to SR assembly");
+        .or_die_if(!config_.soft_fail, "minigraph LR to SR assembly")
+        .or_execute([this]{ soft_fail_exit(); });
     
     return gaf_output;
 }
@@ -888,7 +901,8 @@ ReadSelectionResult Pipeline::run_long_read_selection(
         .expect_file(result.unknown_both, Expect::GZIPPED | Expect::FASTQ)
         .expect_file(result.unknown_neither, Expect::GZIPPED | Expect::FASTQ)
         .expect_file(result.unmapped, Expect::GZIPPED | Expect::FASTQ)
-        .or_die("split-plasmid-reads");
+        .or_die_if(!config_.soft_fail, "split-plasmid-reads")
+        .or_execute([this]{ soft_fail_exit(); });
     
     return result;
 }
@@ -911,10 +925,11 @@ std::filesystem::path Pipeline::find_missing_long_reads(
     // Concatenate unknown reads to temp file
     auto temp_unknown = concat_gzipped(unknown_files);
     if (temp_unknown.empty()) {
+        if (config_.soft_fail) soft_fail_exit();
         log("ERROR", "Failed to concatenate unknown reads");
         std::exit(EXIT_FAILURE);
     }
-    
+
     // Run innotin to filter reads
     TempFile temp_filtered(".fasta");
     {
@@ -927,7 +942,8 @@ std::filesystem::path Pipeline::find_missing_long_reads(
         
         Result(run_innotin(innotin_params))
             .expect_file(temp_filtered.path(), Expect::FASTA)
-            .or_die("innotin");
+            .or_die_if(!config_.soft_fail, "innotin")
+            .or_execute([this]{ soft_fail_exit(); });
     }
     
     // Clean up temp unknown file
@@ -948,14 +964,15 @@ std::filesystem::path Pipeline::find_missing_long_reads(
     
     run_cmd(minimap_cmd, "minimap2 propagation round " + std::to_string(round))
         .expect_file(paf_output)
-        .or_die("minimap2 propagation round " + std::to_string(round));
+        .or_die_if(!config_.soft_fail, "minimap2 propagation round " + std::to_string(round))
+        .or_execute([this]{ soft_fail_exit(); });
     
     return paf_output;
 }
 
 std::filesystem::path Pipeline::extract_missing_long_reads(
     const std::filesystem::path& plasmid_alignment,
-    const std::vector<std::filesystem::path>& unknown_reads) const {
+    const std::vector<std::filesystem::path>& unknown_reads) {
     
     // Output path: replace .paf with .fastq.gz
     auto output_path = plasmid_alignment;
@@ -969,6 +986,7 @@ std::filesystem::path Pipeline::extract_missing_long_reads(
     // Concatenate unknown reads
     auto temp_unknown = concat_gzipped(unknown_reads);
     if (temp_unknown.empty()) {
+        if (config_.soft_fail) soft_fail_exit();
         log("ERROR", "Failed to concatenate unknown reads");
         std::exit(EXIT_FAILURE);
     }
@@ -980,7 +998,8 @@ std::filesystem::path Pipeline::extract_missing_long_reads(
     
     Result(run_select_missing_reads(select_params))
         .expect_file(output_path, Expect::GZIPPED | Expect::FASTQ)
-        .or_die("select-missing-reads");
+        .or_die_if(!config_.soft_fail, "select-missing-reads")
+        .or_execute([this]{ soft_fail_exit(); });
     
     remove_if_exists(temp_unknown);
     
@@ -1012,6 +1031,7 @@ std::filesystem::path Pipeline::run_unicycler_lr_assembly(
     // Concatenate plasmid reads
     auto temp_lr = concat_gzipped(plasmid_files);
     if (temp_lr.empty()) {
+        if (config_.soft_fail) soft_fail_exit();
         log("ERROR", "Failed to concatenate plasmid reads");
         std::exit(EXIT_FAILURE);
     }
@@ -1047,7 +1067,8 @@ std::filesystem::path Pipeline::run_unicycler_lr_assembly(
     
     run_cmd(cmd, "unicycler LR assembly iteration " + std::to_string(iteration))
         .expect_file(assembly_fasta, Expect::FASTA)
-        .or_die("unicycler LR assembly iteration " + std::to_string(iteration));
+        .or_die_if(!config_.soft_fail, "unicycler LR assembly iteration " + std::to_string(iteration))
+        .or_execute([this]{ soft_fail_exit(); });
     
     remove_if_exists(temp_lr);
     

@@ -188,6 +188,34 @@ struct Result {
         }
     }
     
+    Result& or_die_if(bool condition, const std::string& stage) {
+        if (code != 0) {
+            if (condition) {
+                std::fprintf(stderr, "\n[ERROR] %s failed", stage.c_str());
+                if (!error_detail.empty()) {
+                    std::fprintf(stderr, " (%s)", error_detail.c_str());
+                }
+                std::fprintf(stderr, "\n");
+                if (!stderr_capture.empty()) {
+                    std::fprintf(stderr, "[ERROR] stderr:\n%s\n", stderr_capture.c_str());
+                }
+                std::exit(EXIT_FAILURE);
+            }
+            std::fprintf(stderr, "\n[WARNING] %s failed", stage.c_str());
+            if (!error_detail.empty()) {
+                std::fprintf(stderr, " (%s)", error_detail.c_str());
+            }
+            std::fprintf(stderr, " — soft-fail active\n");
+        }
+        return *this;
+    }
+
+    template<typename F>
+    Result& or_execute(F&& fn) {
+        if (code != 0) fn();
+        return *this;
+    }
+
     [[nodiscard]] bool ok() const { return code == 0; }
 };
 

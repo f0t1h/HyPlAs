@@ -61,6 +61,9 @@ int main(int argc, char* argv[]) {
     // Assembly options
     app.add_flag("--use-spades", config.use_spades,
         "Use SPAdes directly for SR assembly instead of Unicycler");
+
+    app.add_flag("--soft-fail", config.soft_fail,
+        "On post-assembly failure, fall back to SR circular contigs instead of exiting");
     
     // Parse with allow_extras to handle --check-deps before validation
     try {

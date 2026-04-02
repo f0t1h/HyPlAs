@@ -3,6 +3,9 @@ From: community.wave.seqera.io/library/blast_diamond_hmmer_infernal_pruned:b4a93
 
 %files
     external/unicycler-modified-for-hyplas /opt/unicycler-modified-for-hyplas
+    src /opt/hyplas/src
+    Makefile /opt/hyplas/Makefile
+    configure /opt/hyplas/configure
 
 %post
     apt-get update && \
@@ -11,6 +14,10 @@ From: community.wave.seqera.io/library/blast_diamond_hmmer_infernal_pruned:b4a93
 
     cd /opt/unicycler-modified-for-hyplas && pip install --no-cache-dir .
 
+    cd /opt/hyplas && ./configure --prefix=/usr/local && make -j$(nproc) && make install
+
+    rm -rf /opt/unicycler-modified-for-hyplas /opt/hyplas
+
 %labels
     Author HyPlAs
-    Description HyPlAs container with unicycler_hyplas_modified
+    Description HyPlAs container

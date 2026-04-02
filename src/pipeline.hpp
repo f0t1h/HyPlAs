@@ -35,6 +35,7 @@ struct PipelineConfig {
     // Assembly options
     bool use_spades = false;  // Use SPAdes directly instead of Unicycler for SR assembly
     // SPAdes defaults: -k 53 --gfa11 --isolate -m 1024
+    bool soft_fail = false;   // Fall back to SR circular contigs on post-assembly failure
 };
 
 /**
@@ -70,7 +71,7 @@ private:
     void setup_from_existing_assembly();
     void setup_from_spades_output();  // Setup from SPAdes GFA output
     std::filesystem::path run_platon_classifier();
-    std::filesystem::path process_platon_output(const std::filesystem::path& platon_dir) const;
+    std::filesystem::path process_platon_output(const std::filesystem::path& platon_dir);
     std::filesystem::path run_minigraph_lr_to_sr();
     ReadSelectionResult run_long_read_selection(
         const std::filesystem::path& prediction_tsv,
@@ -81,14 +82,14 @@ private:
         int round);
     std::filesystem::path extract_missing_long_reads(
         const std::filesystem::path& plasmid_alignment,
-        const std::vector<std::filesystem::path>& unknown_reads) const;
+        const std::vector<std::filesystem::path>& unknown_reads);
     std::filesystem::path run_unicycler_lr_assembly(
         const std::vector<std::filesystem::path>& plasmid_files,
         int iteration);
     
     // Helper functions
     void fix_gfa_empty_segments(const std::filesystem::path& input,
-                                const std::filesystem::path& output) const;
+                                const std::filesystem::path& output);
     void remove_gfa_overlaps(const std::filesystem::path& input,
                              const std::filesystem::path& output) const;
     void extract_fasta_from_gfa(const std::filesystem::path& gfa,
@@ -97,6 +98,7 @@ private:
     void write_circular_contigs(const std::filesystem::path& assembly_fasta,
                                 int iteration);
     void symlink_remaining_iterations(int from_iteration);
+    [[noreturn]] void soft_fail_exit();
 };
 
 /**
