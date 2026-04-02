@@ -1,0 +1,491 @@
+#!/usr/bin/env bash
+#
+# HyPlAs configure script
+# Generates config.mk for building HyPlAs C++ components
+#
+# Usage: ./configure [OPTIONS]
+#   --help              Show this help message
+#   --prefix=PATH       Installation prefix (default: /usr/local)
+#   --bindir=PATH       Binary installation directory (default: PREFIX/bin)
+#   --enable-debug      Build with debug symbols and no optimization
+#   --enable-sanitizers Enable AddressSanitizer and UBSan (implies debug)
+#   --enable-static     Prefer static linking where possible
+#   --with-zlib=PATH    Path to zlib installation
+#   --with-cxx=PATH     Use specific C++ compiler
+#
+
+set -Eeuo pipefail
+
+# -----------------------------------------------------------------------------
+# Constants
+# -----------------------------------------------------------------------------
+readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+readonly CONFIG_FILE="config.mk"
+readonly REQUIRED_CXX_STD=20
+
+# -----------------------------------------------------------------------------
+# Default values
+# -----------------------------------------------------------------------------
+PREFIX="/usr/local"
+BINDIR=""
+CXX=""
+CXXFLAGS=""
+LDFLAGS=""
+ZLIB_PATH=""
+ENABLE_DEBUG=0
+ENABLE_SANITIZERS=0
+ENABLE_STATIC=0
+
+# Detected values
+DETECTED_CXX=""
+DETECTED_PLATFORM=""
+DETECTED_ZLIB_CFLAGS=""
+DETECTED_ZLIB_LDFLAGS=""
+
+# -----------------------------------------------------------------------------
+# Logging helpers
+# -----------------------------------------------------------------------------
+log_info() {
+    printf "checking %s... " "$1"
+}
+
+log_result() {
+    printf "%s\n" "$1"
+}
+
+log_error() {
+    printf "\033[31merror:\033[0m %s\n" "$1" >&2
+}
+
+log_warn() {
+    printf "\033[33mwarning:\033[0m %s\n" "$1" >&2
+}
+
+log_success() {
+    printf "\033[32m%s\033[0m\n" "$1"
+}
+
+# -----------------------------------------------------------------------------
+# Usage
+# -----------------------------------------------------------------------------
+show_help() {
+    cat <<'EOF'
+HyPlAs configure script
+
+Usage: ./configure [OPTIONS]
+
+Installation directories:
+  --prefix=PATH         Installation prefix [/usr/local]
+  --bindir=PATH         Binary directory [PREFIX/bin]
+
+Build options:
+  --enable-debug        Build with debug symbols (-g -O0)
+  --enable-sanitizers   Enable ASan/UBSan (implies --enable-debug)
+  --enable-static       Prefer static linking
+
+Dependencies:
+  --with-zlib=PATH      Path to zlib installation
+  --with-cxx=COMPILER   Use specific C++ compiler
+
+Environment variables:
+  CXX                   C++ compiler to use
+  CXXFLAGS              Additional C++ compiler flags
+  LDFLAGS               Additional linker flags
+
+Conda/Container support:
+  If CONDA_PREFIX or VIRTUAL_ENV is set and --prefix is not specified,
+  the script will default to installing in the active environment.
+
+Examples:
+  ./configure --prefix=$HOME/.local
+  ./configure --prefix=$CONDA_PREFIX --enable-static
+  ./configure --enable-debug --enable-sanitizers
+
+EOF
+}
+
+# -----------------------------------------------------------------------------
+# Argument parsing
+# -----------------------------------------------------------------------------
+parse_args() {
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --help|-h)
+                show_help
+                exit 0
+                ;;
+            --prefix=*)
+                PREFIX="${1#*=}"
+                ;;
+            --prefix)
+                shift
+                PREFIX="${1:-}"
+                ;;
+            --bindir=*)
+                BINDIR="${1#*=}"
+                ;;
+            --bindir)
+                shift
+                BINDIR="${1:-}"
+                ;;
+            --enable-debug)
+                ENABLE_DEBUG=1
+                ;;
+            --enable-sanitizers)
+                ENABLE_SANITIZERS=1
+                ENABLE_DEBUG=1
+                ;;
+            --enable-static)
+                ENABLE_STATIC=1
+                ;;
+            --with-zlib=*)
+                ZLIB_PATH="${1#*=}"
+                ;;
+            --with-zlib)
+                shift
+                ZLIB_PATH="${1:-}"
+                ;;
+            --with-cxx=*)
+                CXX="${1#*=}"
+                ;;
+            --with-cxx)
+                shift
+                CXX="${1:-}"
+                ;;
+            *)
+                log_error "unknown option: $1"
+                printf "Try './configure --help' for more information.\n" >&2
+                exit 1
+                ;;
+        esac
+        shift
+    done
+}
+
+# -----------------------------------------------------------------------------
+# Platform detection
+# -----------------------------------------------------------------------------
+detect_platform() {
+    log_info "platform"
+    case "$(uname -s)" in
+        Linux*)
+            DETECTED_PLATFORM="linux"
+            ;;
+        Darwin*)
+            DETECTED_PLATFORM="macos"
+            ;;
+        MINGW*|MSYS*|CYGWIN*)
+            DETECTED_PLATFORM="windows"
+            ;;
+        *)
+            DETECTED_PLATFORM="unknown"
+            ;;
+    esac
+    log_result "$DETECTED_PLATFORM ($(uname -m))"
+}
+
+# -----------------------------------------------------------------------------
+# Environment detection (conda/venv)
+# -----------------------------------------------------------------------------
+detect_environment() {
+    # If prefix wasn't explicitly set, check for active environments
+    if [[ "$PREFIX" == "/usr/local" ]]; then
+        if [[ -n "${CONDA_PREFIX:-}" ]]; then
+            log_info "conda environment"
+            log_result "$CONDA_PREFIX"
+            PREFIX="$CONDA_PREFIX"
+        elif [[ -n "${VIRTUAL_ENV:-}" ]]; then
+            log_info "virtual environment"
+            log_result "$VIRTUAL_ENV"
+            PREFIX="$VIRTUAL_ENV"
+        fi
+    fi
+
+    # Set bindir if not explicitly provided
+    if [[ -z "$BINDIR" ]]; then
+        BINDIR="${PREFIX}/bin"
+    fi
+}
+
+# -----------------------------------------------------------------------------
+# Compiler detection
+# -----------------------------------------------------------------------------
+detect_compiler() {
+    log_info "C++ compiler"
+
+    local candidates=()
+    
+    # User-specified compiler takes priority
+    if [[ -n "$CXX" ]]; then
+        candidates+=("$CXX")
+    fi
+    
+    # Environment variable
+    if [[ -n "${CXX:-}" ]]; then
+        candidates+=("$CXX")
+    fi
+    
+    # Platform-specific preferences
+    if [[ "$DETECTED_PLATFORM" == "macos" ]]; then
+        candidates+=(clang++ g++-14 g++-13 g++-12 g++ c++)
+    else
+        candidates+=(g++ clang++ c++)
+    fi
+
+    for compiler in "${candidates[@]}"; do
+        if command -v "$compiler" &>/dev/null; then
+            DETECTED_CXX="$compiler"
+            log_result "$DETECTED_CXX"
+            return 0
+        fi
+    done
+
+    log_result "not found"
+    log_error "no C++ compiler found. Install g++ or clang++."
+    exit 1
+}
+
+# -----------------------------------------------------------------------------
+# C++20 support check
+# -----------------------------------------------------------------------------
+check_cxx20_support() {
+    log_info "C++20 support"
+
+    local test_file
+    test_file=$(mktemp "${TMPDIR:-/tmp}/hyplas_cxx_test.XXXXXX.cpp")
+    local test_bin="${test_file%.cpp}"
+
+    cat > "$test_file" <<'EOF'
+#include <concepts>
+#include <ranges>
+#include <span>
+
+template<typename T>
+concept Numeric = std::integral<T> || std::floating_point<T>;
+
+template<Numeric T>
+constexpr T square(T x) { return x * x; }
+
+int main() {
+    auto v = std::views::iota(1, 10) | std::views::filter([](int x) { return x % 2 == 0; });
+    return square(2) == 4 ? 0 : 1;
+}
+EOF
+
+    local result=0
+    if "$DETECTED_CXX" -std=c++20 -o "$test_bin" "$test_file" 2>/dev/null; then
+        log_result "yes"
+    else
+        log_result "no"
+        log_error "$DETECTED_CXX does not support C++20. Please use a newer compiler."
+        result=1
+    fi
+
+    rm -f "$test_file" "$test_bin"
+    [[ $result -eq 0 ]] || exit 1
+}
+
+# -----------------------------------------------------------------------------
+# zlib detection
+# -----------------------------------------------------------------------------
+detect_zlib() {
+    log_info "zlib"
+
+    local test_file
+    test_file=$(mktemp "${TMPDIR:-/tmp}/hyplas_zlib_test.XXXXXX.cpp")
+    local test_bin="${test_file%.cpp}"
+
+    cat > "$test_file" <<'EOF'
+#include <zlib.h>
+int main() {
+    z_stream strm;
+    strm.zalloc = Z_NULL;
+    return deflateInit(&strm, Z_DEFAULT_COMPRESSION) == Z_OK ? 0 : 1;
+}
+EOF
+
+    local zlib_cflags=""
+    local zlib_ldflags="-lz"
+
+    # Check user-provided path first
+    if [[ -n "$ZLIB_PATH" ]]; then
+        zlib_cflags="-I${ZLIB_PATH}/include"
+        zlib_ldflags="-L${ZLIB_PATH}/lib -lz"
+        if [[ "$ENABLE_STATIC" -eq 1 ]] && [[ -f "${ZLIB_PATH}/lib/libz.a" ]]; then
+            zlib_ldflags="${ZLIB_PATH}/lib/libz.a"
+        fi
+    fi
+
+    # Check conda environment
+    if [[ -z "$zlib_cflags" ]] && [[ -n "${CONDA_PREFIX:-}" ]]; then
+        if [[ -f "${CONDA_PREFIX}/include/zlib.h" ]]; then
+            zlib_cflags="-I${CONDA_PREFIX}/include"
+            zlib_ldflags="-L${CONDA_PREFIX}/lib -lz"
+            if [[ "$ENABLE_STATIC" -eq 1 ]] && [[ -f "${CONDA_PREFIX}/lib/libz.a" ]]; then
+                zlib_ldflags="${CONDA_PREFIX}/lib/libz.a"
+            fi
+        fi
+    fi
+
+    # Try pkg-config
+    if [[ -z "$zlib_cflags" ]] && command -v pkg-config &>/dev/null; then
+        if pkg-config --exists zlib 2>/dev/null; then
+            zlib_cflags="$(pkg-config --cflags zlib 2>/dev/null || true)"
+            if [[ "$ENABLE_STATIC" -eq 1 ]]; then
+                zlib_ldflags="$(pkg-config --libs --static zlib 2>/dev/null || true)"
+            else
+                zlib_ldflags="$(pkg-config --libs zlib 2>/dev/null || true)"
+            fi
+        fi
+    fi
+
+    local found=0
+
+    # Try to compile with detected flags
+    # shellcheck disable=SC2086
+    if "$DETECTED_CXX" -std=c++20 $zlib_cflags -o "$test_bin" "$test_file" $zlib_ldflags 2>/dev/null; then
+        DETECTED_ZLIB_CFLAGS="$zlib_cflags"
+        DETECTED_ZLIB_LDFLAGS="$zlib_ldflags"
+        log_result "yes"
+        found=1
+    fi
+
+    # Fallback: try system default
+    if [[ $found -eq 0 ]]; then
+        if "$DETECTED_CXX" -std=c++20 -o "$test_bin" "$test_file" -lz 2>/dev/null; then
+            DETECTED_ZLIB_CFLAGS=""
+            DETECTED_ZLIB_LDFLAGS="-lz"
+            log_result "yes (system)"
+            found=1
+        fi
+    fi
+
+    rm -f "$test_file" "$test_bin"
+
+    if [[ $found -eq 0 ]]; then
+        log_result "no"
+        log_error "zlib not found. Install zlib development files or use --with-zlib=PATH"
+        exit 1
+    fi
+}
+
+# -----------------------------------------------------------------------------
+# Build flags
+# -----------------------------------------------------------------------------
+compute_flags() {
+    log_info "build configuration"
+
+    # Base flags
+    CXXFLAGS="-std=c++20 -Wall -Wextra -Wpedantic"
+
+    # Add zlib flags
+    if [[ -n "$DETECTED_ZLIB_CFLAGS" ]]; then
+        CXXFLAGS="$CXXFLAGS $DETECTED_ZLIB_CFLAGS"
+    fi
+
+    # Debug or release
+    if [[ "$ENABLE_DEBUG" -eq 1 ]]; then
+        CXXFLAGS="$CXXFLAGS -g -O0 -DHYPLAS_DEBUG=1"
+        log_result "debug"
+    else
+        CXXFLAGS="$CXXFLAGS -O2 -DNDEBUG"
+        log_result "release"
+    fi
+
+    # Sanitizers
+    if [[ "$ENABLE_SANITIZERS" -eq 1 ]]; then
+        log_info "sanitizers"
+        CXXFLAGS="$CXXFLAGS -fsanitize=address,undefined -fno-omit-frame-pointer"
+        LDFLAGS="$LDFLAGS -fsanitize=address,undefined"
+        log_result "asan,ubsan"
+    fi
+
+    # Linker flags
+    LDFLAGS="$LDFLAGS $DETECTED_ZLIB_LDFLAGS"
+
+    # Platform-specific flags
+    if [[ "$DETECTED_PLATFORM" == "linux" ]]; then
+        LDFLAGS="$LDFLAGS -lpthread"
+    fi
+
+    # Static linking preference
+    if [[ "$ENABLE_STATIC" -eq 1 ]]; then
+        log_info "static linking"
+        if [[ "$DETECTED_PLATFORM" == "linux" ]]; then
+            LDFLAGS="-static-libgcc -static-libstdc++ $LDFLAGS"
+            log_result "partial (libgcc, libstdc++)"
+        else
+            log_result "not available on $DETECTED_PLATFORM"
+        fi
+    fi
+}
+
+# -----------------------------------------------------------------------------
+# Write config.mk
+# -----------------------------------------------------------------------------
+write_config() {
+    log_info "writing $CONFIG_FILE"
+
+    cat > "${SCRIPT_DIR}/${CONFIG_FILE}" <<EOF
+# Generated by configure on $(date)
+# Do not edit manually - re-run ./configure instead
+
+# Installation paths
+PREFIX     := $PREFIX
+BINDIR     := $BINDIR
+
+# Compiler
+CXX        := $DETECTED_CXX
+
+# Flags
+CXXFLAGS   := $CXXFLAGS
+LDFLAGS    := $LDFLAGS
+
+# Build options
+DEBUG      := $ENABLE_DEBUG
+SANITIZERS := $ENABLE_SANITIZERS
+STATIC     := $ENABLE_STATIC
+
+# Platform
+PLATFORM   := $DETECTED_PLATFORM
+EOF
+
+    log_result "done"
+}
+
+# -----------------------------------------------------------------------------
+# Summary
+# -----------------------------------------------------------------------------
+print_summary() {
+    printf "\n"
+    printf "Configuration summary:\n"
+    printf "  Platform:     %s\n" "$DETECTED_PLATFORM"
+    printf "  Compiler:     %s\n" "$DETECTED_CXX"
+    printf "  Prefix:       %s\n" "$PREFIX"
+    printf "  Bindir:       %s\n" "$BINDIR"
+    printf "  Debug:        %s\n" "$( [[ $ENABLE_DEBUG -eq 1 ]] && echo yes || echo no )"
+    printf "  Sanitizers:   %s\n" "$( [[ $ENABLE_SANITIZERS -eq 1 ]] && echo yes || echo no )"
+    printf "  Static:       %s\n" "$( [[ $ENABLE_STATIC -eq 1 ]] && echo yes || echo no )"
+    printf "\n"
+    log_success "Configuration complete. Run 'make' to build."
+    printf "\n"
+}
+
+# -----------------------------------------------------------------------------
+# Main
+# -----------------------------------------------------------------------------
+main() {
+    printf "Configuring HyPlAs...\n\n"
+
+    parse_args "$@"
+    detect_platform
+    detect_environment
+    detect_compiler
+    check_cxx20_support
+    detect_zlib
+    compute_flags
+    write_config
+    print_summary
+}
+
+main "$@"
