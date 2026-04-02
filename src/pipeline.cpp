@@ -508,8 +508,123 @@ void Pipeline::extract_fasta_from_gfa(const std::filesystem::path& gfa,
     }
 }
 
+void Pipeline::write_circular_plasmid_contigs(
+    const std::filesystem::path& gfa_path,
+    const std::filesystem::path& fasta_path,
+    const std::filesystem::path& prediction_tsv,
+    int iteration) const {
+    
+    auto final_path = output_dir_ / ("plasmids.final.it" + std::to_string(iteration) + ".fasta");
+    
+    // 1. Parse GFA for circular contigs (self-loop links)
+    std::unordered_set<std::string> circular_contigs;
+    {
+        std::ifstream gfa(gfa_path);
+        if (!gfa) {
+            log("ERROR", "Cannot open GFA: " + gfa_path.string());
+            std::exit(EXIT_FAILURE);
+        }
+        
+        std::string line;
+        while (std::getline(gfa, line)) {
+            if (line.empty() || line[0] != 'L') continue;
+            
+            std::istringstream iss(line);
+            std::string tag, from, from_orient, to, to_orient;
+            iss >> tag >> from >> from_orient >> to >> to_orient;
+            
+            if (from == to) {
+                circular_contigs.insert(from);
+            }
+        }
+    }
+    
+    // 2. Parse prediction TSV for plasmid contigs
+    std::unordered_set<std::string> plasmid_contigs;
+    {
+        std::ifstream pred(prediction_tsv);
+        if (!pred) {
+            log("ERROR", "Cannot open prediction TSV: " + prediction_tsv.string());
+            std::exit(EXIT_FAILURE);
+        }
+        
+        std::string line;
+        std::getline(pred, line); // Skip header
+        
+        while (std::getline(pred, line)) {
+            if (line.empty()) continue;
+            
+            std::istringstream iss(line);
+            std::string name, prediction;
+            if (std::getline(iss, name, '\t') && std::getline(iss, prediction, '\t')) {
+                if (prediction == "plasmid") {
+                    plasmid_contigs.insert(name);
+                }
+            }
+        }
+    }
+    
+    // 3. Get sequences from FASTA and write matching contigs
+    std::ifstream fasta(fasta_path);
+    std::ofstream out(final_path);
+    
+    if (!fasta || !out) {
+        log("ERROR", "Cannot open FASTA files");
+        std::exit(EXIT_FAILURE);
+    }
+    
+    std::string line;
+    std::string current_name;
+    std::string current_seq;
+    
+    auto write_if_match = [&]() {
+        if (current_name.empty() || current_seq.empty()) return;
+        
+        // Extract contig name (before first space)
+        std::string contig_name = current_name.substr(0, current_name.find(' '));
+        
+        // Write if both circular AND plasmid-predicted
+        if (circular_contigs.contains(contig_name) && plasmid_contigs.contains(contig_name)) {
+            out << '>' << current_name << " circular\n" << current_seq << '\n';
+        }
+    };
+    
+    while (std::getline(fasta, line)) {
+        if (line.empty()) continue;
+        
+        if (line[0] == '>') {
+            write_if_match();
+            current_name = line.substr(1); // Remove '>'
+            current_seq.clear();
+        } else {
+            current_seq += line;
+        }
+    }
+    write_if_match();
+}
+
+[[noreturn]] void Pipeline::soft_fail_exit() {
+    log("WARNING", "Soft-fail: falling back to circular plasmid contigs from SR assembly");
+    
+    auto sr_gfa = output_dir_ / "unicycler_sr" / "assembly.gfa";
+    auto sr_fasta = output_dir_ / "unicycler_sr" / "assembly.fasta";
+    
+    write_circular_plasmid_contigs(sr_gfa, sr_fasta, prediction_tsv_, 0);
+    symlink_remaining_iterations(0);
+    std::exit(0);
+}
+
+void Pipeline::symlink_remaining_iterations(int from_iteration) {
+    auto source = output_dir_ / ("plasmids.final.it" + std::to_string(from_iteration) + ".fasta");
+    
+    for (int i = from_iteration + 1; i <= config_.propagate_rounds; ++i) {
+        auto link = output_dir_ / ("plasmids.final.it" + std::to_string(i) + ".fasta");
+        force_symlink(source.filename(), link);
+    }
+}
+
 void Pipeline::write_circular_contigs(const std::filesystem::path& assembly_fasta,
-                                       int iteration) {
+                                       int iteration) const {
     auto final_path = output_dir_ / ("plasmids.final.it" + std::to_string(iteration) + ".fasta");
     
     std::ifstream in(assembly_fasta);
@@ -532,9 +647,7 @@ void Pipeline::write_circular_contigs(const std::filesystem::path& assembly_fast
     };
     
     while (std::getline(in, line)) {
-        if (line.empty()) {
-            continue;
-        }
+        if (line.empty()) continue;
         
         if (line[0] == '>') {
             write_if_circular();
@@ -546,23 +659,6 @@ void Pipeline::write_circular_contigs(const std::filesystem::path& assembly_fast
         }
     }
     write_if_circular();
-}
-
-[[noreturn]] void Pipeline::soft_fail_exit() {
-    log("WARNING", "Soft-fail: falling back to circular contigs from SR assembly");
-    auto sr_fasta = output_dir_ / "unicycler_sr" / "assembly.fasta";
-    write_circular_contigs(sr_fasta, 0);
-    symlink_remaining_iterations(0);
-    std::exit(0);
-}
-
-void Pipeline::symlink_remaining_iterations(int from_iteration) {
-    auto source = output_dir_ / ("plasmids.final.it" + std::to_string(from_iteration) + ".fasta");
-    
-    for (int i = from_iteration + 1; i <= config_.propagate_rounds; ++i) {
-        auto link = output_dir_ / ("plasmids.final.it" + std::to_string(i) + ".fasta");
-        force_symlink(source.filename(), link);
-    }
 }
 
 // ============================================================================
@@ -728,8 +824,7 @@ std::filesystem::path Pipeline::run_platon_classifier() {
         unicycler_fasta.string()
     }, "platon classification")
         .expect_file(result_tsv, Expect::NON_EMPTY)
-        .or_die_if(!config_.soft_fail, "platon classification")
-        .or_execute([this]{ soft_fail_exit(); });
+        .or_die("platon classification");
     
     return platon_path;
 }
@@ -745,7 +840,6 @@ std::filesystem::path Pipeline::process_platon_output(const std::filesystem::pat
     std::ofstream out(output_tsv);
     
     if (!in || !out) {
-        if (config_.soft_fail) soft_fail_exit();
         log("ERROR", "Cannot open Platon result files");
         std::exit(EXIT_FAILURE);
     }
@@ -1100,7 +1194,7 @@ int Pipeline::run() {
     // 2. Classification
     log("INFO", "Running Platon classifier");
     auto platon_dir = run_platon_classifier();
-    auto prediction_tsv = process_platon_output(platon_dir);
+    prediction_tsv_ = process_platon_output(platon_dir);
     
     // 3. Graph alignment (if long reads provided)
     if (!config_.long_reads) {
@@ -1113,16 +1207,17 @@ int Pipeline::run() {
     
     // 4. Initial read selection
     log("INFO", "Running initial read selection");
-    auto reads = run_long_read_selection(prediction_tsv, graph_alignment);
+    auto reads = run_long_read_selection(prediction_tsv_, graph_alignment);
     
     // 5. Check if any plasmid reads found
     size_t plasmid_lines = line_count(reads.plasmid_reads);
     if (plasmid_lines < 4) {
         log("INFO", "No plasmid long reads found");
         
-        // Write only circular contigs from SR assembly
+        // Write circular plasmid contigs from SR assembly
+        auto sr_gfa = output_dir_ / "unicycler_sr" / "assembly.gfa";
         auto sr_fasta = output_dir_ / "unicycler_sr" / "assembly.fasta";
-        write_circular_contigs(sr_fasta, 0);
+        write_circular_plasmid_contigs(sr_gfa, sr_fasta, prediction_tsv_, 0);
         
         // Symlink remaining iterations
         symlink_remaining_iterations(0);

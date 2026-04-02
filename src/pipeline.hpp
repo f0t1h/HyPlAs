@@ -64,6 +64,7 @@ public:
 private:
     const PipelineConfig& config_;
     std::filesystem::path output_dir_;
+    std::filesystem::path prediction_tsv_;
     
     // Pipeline stages
     std::filesystem::path run_unicycler_sr_assembly();
@@ -95,8 +96,14 @@ private:
     void extract_fasta_from_gfa(const std::filesystem::path& gfa,
                                 const std::filesystem::path& fasta,
                                 size_t min_length = 200) const;
+    void write_circular_plasmid_contigs(
+        const std::filesystem::path& gfa_path,
+        const std::filesystem::path& fasta_path,
+        const std::filesystem::path& prediction_tsv,
+        int iteration) const;
+    
     void write_circular_contigs(const std::filesystem::path& assembly_fasta,
-                                int iteration);
+                                int iteration) const;
     void symlink_remaining_iterations(int from_iteration);
     [[noreturn]] void soft_fail_exit();
 };
