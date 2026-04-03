@@ -9,8 +9,10 @@ From: community.wave.seqera.io/library/blast_diamond_hmmer_infernal_pruned:b4a93
 
 %post
     apt-get update && \
-        apt-get install -y --no-install-recommends build-essential python3-dev zlib1g-dev && \
+        apt-get install -y --no-install-recommends build-essential python3-dev zlib1g-dev pigz && \
         rm -rf /var/lib/apt/lists/*
+
+    conda install -y -c bioconda -c conda-forge fastp chopper multiqc nanoplot quast && conda clean -afy
 
     cd /opt/unicycler-modified-for-hyplas && pip install --no-cache-dir .
 

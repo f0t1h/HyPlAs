@@ -2,8 +2,11 @@ FROM community.wave.seqera.io/library/blast_diamond_hmmer_infernal_pruned:24ef3c
 
 # Install build dependencies for C++ components (hyplas + unicycler)
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends build-essential python3-dev zlib1g-dev && \
+    apt-get install -y --no-install-recommends build-essential python3-dev zlib1g-dev pigz && \
     rm -rf /var/lib/apt/lists/*
+
+# Install read QC tools
+RUN conda install -y -c bioconda -c conda-forge fastp chopper multiqc nanoplot quast && conda clean -afy
 
 # Install hyplas dependencies
 COPY external/unicycler-modified-for-hyplas /opt/unicycler-modified-for-hyplas

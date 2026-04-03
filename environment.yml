@@ -8,6 +8,14 @@ dependencies:
   - pip
   - biopython
 
+  # Read QC / trimming
+  - fastp>=0.23
+  - chopper>=0.9
+  - pigz
+  - multiqc>=1.14
+  - nanoplot>=1.42
+  - quast>=5.2
+
   # HyPlAs top-level runtime tools
   - spades>=4,<5
   - minigraph>=0.21
