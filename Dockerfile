@@ -6,8 +6,7 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 # Install read QC tools
-RUN conda install -y -c bioconda -c conda-forge fastp chopper multiqc quast && conda clean -afy
-RUN pip install --no-cache-dir NanoPlot
+RUN conda install -y -c bioconda -c conda-forge "python>=3.10,<3.13" fastp chopper multiqc quast nanoplot && conda clean -afy
 
 # Install hyplas dependencies
 COPY external/unicycler-modified-for-hyplas /opt/unicycler-modified-for-hyplas
