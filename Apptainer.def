@@ -12,7 +12,8 @@ From: community.wave.seqera.io/library/blast_diamond_hmmer_infernal_pruned:b4a93
         apt-get install -y --no-install-recommends build-essential python3-dev zlib1g-dev pigz && \
         rm -rf /var/lib/apt/lists/*
 
-    conda install -y -c bioconda -c conda-forge fastp chopper multiqc nanoplot quast && conda clean -afy
+    conda install -y -c bioconda -c conda-forge fastp chopper multiqc quast && conda clean -afy
+    pip install --no-cache-dir NanoPlot
 
     cd /opt/unicycler-modified-for-hyplas && pip install --no-cache-dir .
 
