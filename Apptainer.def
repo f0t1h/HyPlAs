@@ -12,7 +12,9 @@ From: community.wave.seqera.io/library/blast_diamond_hmmer_infernal_pruned:b4a93
         apt-get install -y --no-install-recommends build-essential python3-dev zlib1g-dev pigz && \
         rm -rf /var/lib/apt/lists/*
 
-    conda install -y -c bioconda -c conda-forge "python>=3.10,<3.13" fastp chopper multiqc quast nanoplot && conda clean -afy
+    micromamba install -y --strict-channel-priority -c conda-forge -c bioconda "python>=3.10,<3.13" fastp chopper multiqc quast nanoplot && \
+        fastp --version && NanoPlot --help > /dev/null && chopper --help > /dev/null && quast --version && multiqc --version && \
+        micromamba clean -afy
 
     cd /opt/unicycler-modified-for-hyplas && pip install --no-cache-dir .
 

@@ -6,7 +6,9 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 # Install read QC tools
-RUN conda install -y -c bioconda -c conda-forge "python>=3.10,<3.13" fastp chopper multiqc quast nanoplot && conda clean -afy
+RUN micromamba install -y --strict-channel-priority -c conda-forge -c bioconda "python>=3.10,<3.13" fastp chopper multiqc quast nanoplot && \
+    fastp --version && NanoPlot --help > /dev/null && chopper --help > /dev/null && quast --version && multiqc --version && \
+    micromamba clean -afy
 
 # Install hyplas dependencies
 COPY external/unicycler-modified-for-hyplas /opt/unicycler-modified-for-hyplas
