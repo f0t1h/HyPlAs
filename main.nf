@@ -3,7 +3,7 @@ nextflow.enable.dsl = 2
 
 // ── Parameters ──────────────────────────────────────────────────────────────
 params.samples    = null          // CSV: sample_id,sr1,sr2,lr
-params.platon_db  = null
+params.platonDb   = null
 params.propagate  = 0
 params.outdir     = "results"
 params.use_spades = false
@@ -136,6 +136,7 @@ process HYPLAS {
 
     input:
     tuple val(sample_id), path(sr1), path(sr2), path(lr)
+    path platon_db
 
     output:
     tuple val(sample_id), path("hyplas_out/*")
@@ -144,7 +145,7 @@ process HYPLAS {
     def spades_flag = params.use_spades ? '--use-spades' : ''
     """
     hyplas-pipeline \
-        --platon-db ${params.platon_db} \
+        --platon-db ${platon_db} \
         -s ${sr1} ${sr2} \
         -l ${lr} \
         -o hyplas_out \
@@ -208,7 +209,7 @@ workflow {
     if (!params.samples) {
         error "Please provide --samples <samples.csv>"
     }
-    if (!params.platon_db) {
+    if (!params.platonDb) {
         error "Please provide --platon-db <path>"
     }
 
@@ -231,7 +232,8 @@ workflow {
     NANOPLOT_TRIMMED(CHOPPER.out)
 
     // Assembly
-    HYPLAS(CHOPPER.out)
+    platon_db_ch = file(params.platonDb, type: 'dir', checkIfExists: true)
+    HYPLAS(CHOPPER.out, platon_db_ch)
 
     // Assembly QC
     QUAST(HYPLAS.out)
