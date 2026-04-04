@@ -144,7 +144,7 @@ process HYPLAS {
     script:
     def spades_flag = params.use_spades ? '--use-spades' : ''
     """
-    hyplas-pipeline \
+    hyplas \
         --platon-db ${platon_db} \
         -s ${sr1} ${sr2} \
         -l ${lr} \
@@ -199,7 +199,7 @@ process MULTIQC {
 
     script:
     """
-    multiqc --force --title "HyPlAs QC Report" reports/
+    multiqc --force reports/
     """
 }
 
