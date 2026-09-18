@@ -4,23 +4,47 @@ From: community.wave.seqera.io/library/blast_diamond_hmmer_infernal_pruned:b4a93
 %files
     external/unicycler-modified-for-hyplas /opt/unicycler-modified-for-hyplas
     src /opt/hyplas/src
-    Makefile /opt/hyplas/Makefile
-    configure /opt/hyplas/configure
+    CMakeLists.txt /opt/hyplas/CMakeLists.txt
+
+%environment
+    export PATH="/usr/local/bin:/opt/conda/bin:$PATH"
 
 %post
+    set -eu
+    export PATH="/usr/local/bin:/opt/conda/bin:$PATH"
+
     apt-get update && \
-        apt-get install -y --no-install-recommends build-essential python3-dev zlib1g-dev pigz && \
+        apt-get install -y --no-install-recommends build-essential cmake git python3-dev zlib1g-dev && \
         rm -rf /var/lib/apt/lists/*
 
-    micromamba install -y -n base --root-prefix /opt/conda --strict-channel-priority -c conda-forge -c bioconda "python>=3.10,<3.13" fastp chopper multiqc quast nanoplot && \
-        fastp --version && NanoPlot --help > /dev/null && chopper --help > /dev/null && quast --version && multiqc --version && \
+    micromamba install -y -n base --root-prefix /opt/conda --strict-channel-priority \
+        -c conda-forge -c bioconda \
+        "python>=3.10,<3.13" pip biopython spades minigraph minimap2 racon \
+        platon prodigal mummer4 fastp chopper pigz multiqc && \
         micromamba clean -afy
 
     cd /opt/unicycler-modified-for-hyplas && pip install --no-cache-dir .
 
-    cd /opt/hyplas && ./configure --prefix=/usr/local && make -j$(nproc) && make install
+    cd /opt/hyplas && \
+        cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=/usr/local \
+            -DCMAKE_CXX_COMPILER=/usr/bin/g++ \
+            -DBUILD_TESTING=OFF && \
+        cmake --build build --parallel 2 && \
+        cmake --install build && \
+        test -x /usr/local/bin/hyplas
 
     rm -rf /opt/unicycler-modified-for-hyplas /opt/hyplas
+
+%test
+    export PATH="/usr/local/bin:/opt/conda/bin:$PATH"
+    command -v hyplas
+    hyplas --help > /dev/null
+    hyplas --check-deps > /dev/null
+    command -v fastp > /dev/null
+    command -v chopper > /dev/null
+    command -v multiqc > /dev/null
 
 %labels
     Author HyPlAs

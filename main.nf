@@ -4,15 +4,37 @@ nextflow.enable.dsl = 2
 // ── Parameters ──────────────────────────────────────────────────────────────
 params.samples    = null          // CSV: sample_id,sr1,sr2,lr
 params.platonDb   = null
-params.propagate  = 0
+params.propagate  = 2
 params.outdir     = "results"
-params.use_spades = false
+params.useSpades     = false
+params.perComponent  = false
 
 // chopper defaults (matching Snakemake workflow)
 params.chopper_minqual  = 9
 params.chopper_minlen   = 500
 params.chopper_headcrop = 75
 params.chopper_tailcrop = 75
+
+// ── Unknown parameter guard ────────────────────────────────────────────────
+def knownParams = [
+    'samples', 'platonDb', 'propagate', 'outdir',
+    'useSpades', 'perComponent',
+    'chopper_minqual', 'chopper_minlen', 'chopper_headcrop', 'chopper_tailcrop'
+] as Set
+
+// Nextflow injects these into params — skip them
+def nextflowInternalParams = [
+    'keep_work', 'help', 'version'
+] as Set
+
+def toKebab = { s -> s.replaceAll(/([A-Z])/, '-$1').toLowerCase() }
+
+params.keySet().each { key ->
+    if (!knownParams.contains(key) && !nextflowInternalParams.contains(key)) {
+        def known = knownParams.sort().collect { "--${toKebab(it)}" }.join(', ')
+        error "Unrecognized parameter: --${toKebab(key)}. Known parameters: ${known}"
+    }
+}
 
 // ── Samplesheet validation ─────────────────────────────────────────────────
 
@@ -65,25 +87,6 @@ process FASTP {
     """
 }
 
-process NANOPLOT_RAW {
-    tag "${sample_id}"
-    label 'process_low'
-    publishDir "${params.outdir}/${sample_id}/qc/nanoplot_raw", mode: 'copy'
-
-    input:
-    tuple val(sample_id), path(sr1), path(sr2), path(lr)
-
-    output:
-    path("${sample_id}_raw_NanoStats.txt"), emit: stats
-
-    script:
-    """
-    NanoPlot --fastq ${lr} \
-             --threads ${task.cpus} \
-             --prefix ${sample_id}_raw_ \
-             --no_static
-    """
-}
 
 process CHOPPER {
     tag "${sample_id}"
@@ -109,25 +112,6 @@ process CHOPPER {
     """
 }
 
-process NANOPLOT_TRIMMED {
-    tag "${sample_id}"
-    label 'process_low'
-    publishDir "${params.outdir}/${sample_id}/qc/nanoplot_trimmed", mode: 'copy'
-
-    input:
-    tuple val(sample_id), path(sr1), path(sr2), path(lr)
-
-    output:
-    path("${sample_id}_trimmed_NanoStats.txt"), emit: stats
-
-    script:
-    """
-    NanoPlot --fastq ${lr} \
-             --threads ${task.cpus} \
-             --prefix ${sample_id}_trimmed_ \
-             --no_static
-    """
-}
 
 process HYPLAS {
     tag "${sample_id}"
@@ -142,7 +126,8 @@ process HYPLAS {
     tuple val(sample_id), path("hyplas_out/*")
 
     script:
-    def spades_flag = params.use_spades ? '--use-spades' : ''
+    def spades_flag     = params.useSpades    ? '--use-spades'     : ''
+    def percomp_flag    = params.perComponent ? '--per-component'  : ''
     """
     hyplas \
         --platon-db ${platon_db} \
@@ -152,37 +137,9 @@ process HYPLAS {
         -t ${task.cpus} \
         -p ${params.propagate} \
         --soft-fail \
-        ${spades_flag}
-    """
-}
-
-process QUAST {
-    tag "${sample_id}"
-    label 'process_low'
-    publishDir "${params.outdir}/${sample_id}/qc/quast", mode: 'copy'
-
-    input:
-    tuple val(sample_id), path(assembly_files)
-
-    output:
-    path("${sample_id}_quast"), emit: report
-
-    script:
-    """
-    # Run QUAST on the final iteration assembly
-    FINAL_FASTA=\$(ls -1 plasmids.final.it*.fasta 2>/dev/null | sort -t. -k4 -n | tail -1)
-
-    if [ -n "\$FINAL_FASTA" ] && [ -s "\$FINAL_FASTA" ]; then
-        quast \$FINAL_FASTA \
-            --output-dir ${sample_id}_quast \
-            --label ${sample_id} \
-            --min-contig 0 \
-            --threads ${task.cpus}
-    else
-        # Empty assembly — create minimal report so pipeline doesn't fail
-        mkdir -p ${sample_id}_quast
-        echo "No plasmid contigs assembled for ${sample_id}" > ${sample_id}_quast/report.txt
-    fi
+        --keep-temp  \
+        ${spades_flag} \
+        ${percomp_flag} 
     """
 }
 
@@ -222,29 +179,15 @@ workflow {
     // QC: short reads
     FASTP(samples_ch)
 
-    // QC: long reads (raw) — runs in parallel with FASTP
-    NANOPLOT_RAW(samples_ch)
-
     // Trim long reads
     CHOPPER(FASTP.out[0])
-
-    // QC: long reads (trimmed)
-    NANOPLOT_TRIMMED(CHOPPER.out)
 
     // Assembly
     platon_db_ch = file(params.platonDb, type: 'dir', checkIfExists: true)
     HYPLAS(CHOPPER.out, platon_db_ch)
 
-    // Assembly QC
-    QUAST(HYPLAS.out)
-
-    // Aggregate all QC reports
+    // Aggregate preprocessing QC reports
     FASTP.out.json
-        .mix(
-            NANOPLOT_RAW.out.stats,
-            NANOPLOT_TRIMMED.out.stats,
-            QUAST.out.report
-        )
         .collect()
         | MULTIQC
 }

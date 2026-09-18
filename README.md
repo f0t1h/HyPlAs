@@ -4,23 +4,39 @@ HyplAs is a tool aimed at assembling plasmids from hybid short-read and long-rea
 HyPlAs main novlty is to incorporate a plasmid classification tools (Such as platon) on short-read assembled contigs to aid plasmidic long-read selection and performs hybrid plasmids assembly.
 HyPlAs has been desiged to work with single genome sequencing data, and has not been tested on metagenomics data.  
 
-## Installation 
+## Installation
 
-### Quickstart with bioconda
-```
-conda install bioconda::hyplas
+HyPlAs is a C++ binary (`hyplas`) that orchestrates external bioinformatics
+tools. Build it from source or use a container image.
+
+### Build from source
+
+Requires a C++20 compiler, CMake (>= 3.20), zlib, and network access at configure
+time (CMake fetches [gtl](https://github.com/greg7mdp/gtl) and
+[shrn](https://github.com/f0t1h/shrn); a sibling `../shrn` checkout is used
+automatically if present). The runtime tools (Unicycler, Platon, minigraph,
+minimap2, SPAdes, ...) are listed in `environment.yml` and can be installed
+with conda/mamba:
+
+```bash
+mamba env create -f environment.yml
+conda activate hyplas-env
+
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j
+cmake --install build            # installs into the active env prefix by default
+ctest --test-dir build           # optional: run the unit tests
 hyplas --help
+hyplas --check-deps              # verify all external tools are on PATH
 ```
 
-### Build hyplass binaries
+The container and `environment.yml` include everything used by `main.nf`:
+Fastp, Chopper, HyPlAs, and MultiQC. QUAST is optional post-run analysis and
+is kept in a separate environment:
 
-With virtualenv 
-```
-source scripts/module_load.sh #For cedar. should be installed if not available
-python -m venv hyplass_env
-source hyplass_env/bin/activate
-python3 installer.py hyplass_env
-hyplas --help
+```bash
+mamba env create -f environment.analysis.yml
+conda activate hyplas-analysis
 ```
 
 ### Container images
@@ -35,7 +51,7 @@ apptainer build hyplas.sif Apptainer.def
 
 ## Overview
 
-HyPlAs is a pipeline combining existing tools and C++ utilities. The legacy Python entrypoint is deprecated in favor of `hyplas-pipeline`.
+HyPlAs is a pipeline combining existing tools and the C++ `hyplas` binary.
 HyPlAs is composed of
 the following steps (see figure below): 
 1. Reads preprocessing;  
@@ -52,11 +68,16 @@ the following steps (see figure below):
 ![HyPlAs](resources/HyPlAs_pipeline.png?raw=true)
 
 ## Usage
+
+Run the pipeline directly:
 ```bash
-hyplas-pipeline --platon-db db -s sr_1.fastq sr_2.fastq -l lr.fastq.gz -o hyplas-out -t 16 -p 2
+hyplas --platon-db db -s sr_1.fastq sr_2.fastq -l lr.fastq.gz -o hyplas-out -t 16 -p 2
 ```
 
-Legacy (deprecated): `python src/hyplas/hyplas.py ...`
+Or run the full QC + assembly + reporting workflow with Nextflow (see `main.nf`):
+```bash
+nextflow run main.nf --samples samplesheet.csv --platonDb db --outdir results
+```
 ### Input
  - --platon-db: Database used by Platon (<a href="https://zenodo.org/record/4066768/files/db.tar.gz">https://zenodo.org/record/4066768/files/db.tar.gz</a>)
  ```
@@ -92,7 +113,7 @@ rm db.tar.gz
 
 ### Run HyPlAs
 ```
-hyplas-pipeline -l SRR10173103.qc.fastq.gz -s SRR3666207_1.qc.fastq SRR3666207_2.qc.fastq -p 2 -o hyplas_outdir --platon-db db -t 64
+hyplas -l SRR10173103.qc.fastq.gz -s SRR3666207_1.qc.fastq SRR3666207_2.qc.fastq -p 2 -o hyplas_outdir --platon-db db -t 64
 ```
 
 ### Output

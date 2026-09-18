@@ -4,8 +4,9 @@
  */
 
 #include "CLI11.hpp"
+#include "error.hpp"
 #include "pipeline.hpp"
-#include "process.hpp"
+#include "stage.hpp"
 
 #include <cstdio>
 #include <cstdlib>
@@ -64,6 +65,12 @@ int main(int argc, char* argv[]) {
 
     app.add_flag("--soft-fail", config.soft_fail,
         "On post-assembly failure, fall back to SR circular contigs instead of exiting");
+
+    app.add_flag("--per-component", config.per_component,
+        "Bin SR contigs into GFA-connected components and run hybrid assembly per component");
+
+    app.add_flag("--keep-temp", config.keep_temp,
+        "Keep the tmp/ directory after pipeline completes (useful for debugging)");
     
     // Parse with allow_extras to handle --check-deps before validation
     try {
@@ -91,18 +98,16 @@ int main(int argc, char* argv[]) {
         return EXIT_FAILURE;
     }
     
-    // Validate inputs
-    if (!config.long_reads && config.short_reads.empty() && !config.sr_assembly) {
-        std::fprintf(stderr, "Error: Must provide --long-reads, --short-reads, or --sr-assembly\n");
+    // A short-read graph is required as the assembly backbone, and long reads
+    // are required for hybrid assembly and propagation.
+    if (!config.long_reads) {
+        std::fprintf(stderr, "Error: --long-reads is required\n");
         return EXIT_FAILURE;
     }
-    
+
     if (config.short_reads.empty() && !config.sr_assembly) {
-        std::fprintf(stderr, "Warning: No short reads provided\n");
-    }
-    
-    if (!config.long_reads) {
-        std::fprintf(stderr, "Warning: No long reads provided\n");
+        std::fprintf(stderr, "Error: Must provide --short-reads or --sr-assembly\n");
+        return EXIT_FAILURE;
     }
     
     // Validate tools before starting
@@ -113,6 +118,12 @@ int main(int argc, char* argv[]) {
     }
     
     // Run pipeline
-    hyplas::Pipeline pipeline(config);
-    return pipeline.run();
+    hyplas::install_spawn_logger();
+    try {
+        hyplas::Pipeline pipeline(config);
+        return pipeline.run();
+    } catch (const hyplas::HyplasError& e) {
+        std::fprintf(stderr, "[ERROR] %s\n", e.what());
+        return EXIT_FAILURE;
+    }
 }

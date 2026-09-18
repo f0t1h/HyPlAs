@@ -21,9 +21,9 @@ __pycache__/
 *.so
 *.dylib
 compile_commands.json
-config.mk
-src/hyplas-utils
-src/hyplas-pipeline
+
+# CMake out-of-source build tree
+build/
 
 # Local databases and raw sequencing data
 db/
@@ -42,6 +42,12 @@ cpp_run/
 cpp_test_run/
 test_*
 *_test.log
+
+#Platon database
+platon-db
+
+# Images
+*.sif
 
 # Agent/editor local state
 .agents/

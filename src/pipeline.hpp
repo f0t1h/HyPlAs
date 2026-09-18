@@ -7,8 +7,10 @@
 #define HYPLAS_PIPELINE_HPP
 
 #include <filesystem>
+#include <iosfwd>
 #include <optional>
 #include <string>
+#include <gtl/phmap.hpp>
 #include <vector>
 
 namespace hyplas {
@@ -35,7 +37,17 @@ struct PipelineConfig {
     // Assembly options
     bool use_spades = false;  // Use SPAdes directly instead of Unicycler for SR assembly
     // SPAdes defaults: -k 53 --gfa11 --isolate -m 1024
-    bool soft_fail = false;   // Fall back to SR circular contigs on post-assembly failure
+    bool soft_fail = false;       // Fall back to SR circular contigs on post-assembly failure
+    bool per_component = false;   // Bin SR contigs into GFA-connected components and assemble each independently
+    bool keep_temp = false;       // Keep tmp/ directory after pipeline completes (for debugging)
+};
+
+/**
+ * @brief A connected component of SR contigs in the assembly graph
+ */
+struct GfaComponent {
+    int id;
+    std::vector<std::string> segments;  // contig names in this component
 };
 
 /**
@@ -64,7 +76,10 @@ public:
 private:
     const PipelineConfig& config_;
     std::filesystem::path output_dir_;
+    std::filesystem::path tmp_dir_;
     std::filesystem::path prediction_tsv_;
+
+    std::filesystem::path make_temp(const std::string& name) const;
     
     // Pipeline stages
     std::filesystem::path run_unicycler_sr_assembly();
@@ -73,35 +88,56 @@ private:
     void setup_from_spades_output();  // Setup from SPAdes GFA output
     std::filesystem::path run_platon_classifier();
     std::filesystem::path process_platon_output(const std::filesystem::path& platon_dir);
-    std::filesystem::path run_minigraph_lr_to_sr();
+    std::filesystem::path run_minigraph_lr_to_sr(
+        const std::filesystem::path& reads_fastq,
+        const std::filesystem::path& gaf_output);
+    std::filesystem::path run_minigraph_lr_to_sr();  // uses config_.long_reads → lr2assembly.gaf
     ReadSelectionResult run_long_read_selection(
         const std::filesystem::path& prediction_tsv,
         const std::filesystem::path& graph_alignment);
     std::filesystem::path find_missing_long_reads(
         const std::vector<std::filesystem::path>& plasmid_files,
         const std::vector<std::filesystem::path>& unknown_files,
-        int round);
+        int round,
+        int comp_id = -1);
     std::filesystem::path extract_missing_long_reads(
         const std::filesystem::path& plasmid_alignment,
         const std::vector<std::filesystem::path>& unknown_reads);
     std::filesystem::path run_unicycler_lr_assembly(
         const std::vector<std::filesystem::path>& plasmid_files,
-        int iteration);
+        int iteration,
+        int comp_id = -1);
     
-    // Helper functions
-    void fix_gfa_empty_segments(const std::filesystem::path& input,
-                                const std::filesystem::path& output);
-    void remove_gfa_overlaps(const std::filesystem::path& input,
-                             const std::filesystem::path& output) const;
-    void extract_fasta_from_gfa(const std::filesystem::path& gfa,
-                                const std::filesystem::path& fasta,
-                                size_t min_length = 200) const;
+    // Per-component assembly
+    std::vector<GfaComponent> extract_plasmid_components(
+        const std::filesystem::path& gaf_path,
+        const std::filesystem::path& prediction_tsv) const;
+    gtl::flat_hash_map<int, std::vector<std::string>> bin_reads_to_components(
+        const std::filesystem::path& gaf_path,
+        const gtl::flat_hash_map<std::string, int>& segment_to_component) const;
+    gtl::flat_hash_map<int, std::vector<std::string>> bin_reads_via_minigraph(
+        const std::filesystem::path& reads_fastq,
+        const gtl::flat_hash_map<std::string, int>& segment_to_component) const;
+    void init_component_unicycler_sr(
+        const std::filesystem::path& comp_gfa,
+        const std::filesystem::path& comp_dir);
+    std::vector<std::filesystem::path> run_per_component_assembly(
+        const std::vector<GfaComponent>& components,
+        const gtl::flat_hash_map<int, std::vector<std::filesystem::path>>& comp_read_files,
+        int iteration);
+    void merge_circular_contigs(
+        const std::vector<std::filesystem::path>& fasta_paths,
+        const std::filesystem::path& sr_gfa,
+        const std::filesystem::path& sr_fasta,
+        const std::filesystem::path& prediction_tsv,
+        int iteration) const;
+
+    // Final-output helpers (thin wrappers over the free gfa transforms)
     void write_circular_plasmid_contigs(
         const std::filesystem::path& gfa_path,
         const std::filesystem::path& fasta_path,
         const std::filesystem::path& prediction_tsv,
         int iteration) const;
-    
     void write_circular_contigs(const std::filesystem::path& assembly_fasta,
                                 int iteration) const;
     void symlink_remaining_iterations(int from_iteration);
