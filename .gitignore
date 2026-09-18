@@ -4,6 +4,7 @@ src/__pycache__
 *.pyc
 hyenv1
 build/*
+build-*/*
 tmp-build/*
 *.egg-info
 *.log
@@ -46,6 +47,9 @@ test_*
 #Platon database
 platon-db
 
+#Nextflow 
+work/
+.nextflow*
 # Images
 *.sif
 

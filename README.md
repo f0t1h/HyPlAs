@@ -13,8 +13,7 @@ tools. Build it from source or use a container image.
 
 Requires a C++20 compiler, CMake (>= 3.20), zlib, and network access at configure
 time (CMake fetches [gtl](https://github.com/greg7mdp/gtl) and
-[shrn](https://github.com/f0t1h/shrn); a sibling `../shrn` checkout is used
-automatically if present). The runtime tools (Unicycler, Platon, minigraph,
+[shrn](https://github.com/f0t1h/shrn). The runtime tools (Unicycler, Platon, minigraph,
 minimap2, SPAdes, ...) are listed in `environment.yml` and can be installed
 with conda/mamba:
 

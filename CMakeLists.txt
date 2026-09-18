@@ -45,12 +45,7 @@ FetchContent_Declare(gtl
     GIT_REPOSITORY https://github.com/greg7mdp/gtl.git
     GIT_TAG        v1.2.0)
 
-# shrn: subprocess execution + output verification. A sibling checkout
-# (../shrn) is used automatically for local development; override with
-# -DFETCHCONTENT_SOURCE_DIR_SHRN=<path> or unset it to fetch from git.
-if(NOT DEFINED FETCHCONTENT_SOURCE_DIR_SHRN AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../shrn/CMakeLists.txt")
-    set(FETCHCONTENT_SOURCE_DIR_SHRN "${CMAKE_CURRENT_SOURCE_DIR}/../shrn" CACHE PATH "Local shrn checkout")
-endif()
+# shrn: subprocess execution + output verification.
 FetchContent_Declare(shrn
     GIT_REPOSITORY https://github.com/f0t1h/shrn.git
     GIT_TAG        v0.3.0)
