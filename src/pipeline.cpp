@@ -52,7 +52,7 @@ Pipeline::Pipeline(const PipelineConfig& config)
 }
 
 shrn::StageOptions Pipeline::stage_options() const {
-    return {.keep_temps = config_.keep_temp, .temp_dir = output_dir_ / "tmp"};
+    return {.keep_temps = config_.keep_temp, .temp_dir = output_dir_ / "tmp", .force = config_.force};
 }
 
 void Pipeline::note_kept_temps(const shrn::Outcome& stage) const {
@@ -124,11 +124,10 @@ std::filesystem::path Pipeline::run_unicycler_sr_assembly() {
     auto assembly_gfa = unicycler_sr_path / "assembly.gfa";
     auto assembly_fasta = unicycler_sr_path / "assembly.fasta";
 
-    // Skip if output already exists (unless --force)
-    if (!config_.force && file_readable(assembly_gfa) && file_readable(assembly_fasta)) {
-        log("WARNING", "Unicycler SR output exists, skipping assembly. Use --force to rerun.");
-        return unicycler_sr_path;
-    }
+    // unicycler writes into -o; declare its outputs so a fresh assembly is not redone.
+    RunOptions deps;
+    deps.inputs = config_.short_reads;
+    deps.outputs = {assembly_gfa, assembly_fasta};
 
     ensure_directory(unicycler_sr_path);
 
@@ -145,9 +144,9 @@ std::filesystem::path Pipeline::run_unicycler_sr_assembly() {
         cmd.emplace_back(config_.short_reads[1].string());
     }
 
-    auto sr_stage = stage("unicycler SR assembly").expect_which("unicycler_hyplas_modified");
+    auto sr_stage = stage("unicycler SR assembly", stage_options()).expect_which("unicycler_hyplas_modified");
     for (const auto& sr : config_.short_reads) sr_stage.expect_file(sr, file_non_empty, "non-empty");
-    sr_stage.proc(cmd)
+    sr_stage.proc(cmd, deps)
         .expect_file(assembly_gfa, file_non_empty, "non-empty")
         .expect_file(assembly_fasta, file_non_empty, "non-empty")
         .expect_file(assembly_fasta, file_is_fasta, "FASTA")
@@ -165,12 +164,9 @@ std::filesystem::path Pipeline::run_spades_sr_assembly() {
     ensure_directory(spades_path);
     ensure_directory(unicycler_sr_path);
 
-    // Skip SPAdes if output already exists (unless --force)
-    if (!config_.force && file_readable(spades_gfa)) {
-        log("WARNING", "SPAdes output exists, skipping assembly. Use --force to rerun.");
-        setup_from_spades_output();
-        return unicycler_sr_path;
-    }
+    RunOptions deps;
+    deps.inputs = config_.short_reads;
+    deps.outputs = {spades_gfa};
 
     // Run SPAdes with default parameters: -k 99 --gfa11 --isolate -m 1024
     std::vector<std::string> cmd = {
@@ -189,9 +185,9 @@ std::filesystem::path Pipeline::run_spades_sr_assembly() {
         cmd.emplace_back(config_.short_reads[1].string());
     }
 
-    auto spades_stage = stage("SPAdes SR assembly").expect_which("spades.py");
+    auto spades_stage = stage("SPAdes SR assembly", stage_options()).expect_which("spades.py");
     for (const auto& sr : config_.short_reads) spades_stage.expect_file(sr, file_non_empty, "non-empty");
-    spades_stage.proc(cmd)
+    spades_stage.proc(cmd, deps)
         .expect_file(spades_gfa, file_non_empty, "non-empty")
         .or_die_if(!config_.soft_fail)
         .or_execute([this]{ soft_fail_exit(); });
@@ -273,12 +269,9 @@ std::filesystem::path Pipeline::run_platon_classifier() {
     auto platon_path = output_dir_ / "classify";
     auto result_tsv = platon_path / "result.tsv";
 
-    if (!config_.force && file_readable(result_tsv)) {
-        log("WARNING", "Platon output exists, skipping. Use --force to rerun.");
-        return platon_path;
-    }
-
-    stage("platon classification")
+    RunOptions deps;
+    deps.outputs = {result_tsv};
+    stage("platon classification", stage_options())
         .expect_which("platon")
         .expect_file(unicycler_fasta, file_non_empty, "non-empty")
         .proc({
@@ -288,8 +281,8 @@ std::filesystem::path Pipeline::run_platon_classifier() {
             "--threads", std::to_string(config_.threads),
             "--prefix", "result",
             "--output", platon_path.string(),
-            unicycler_fasta.string()
-        })
+            in(unicycler_fasta)
+        }, deps)
         .expect_file(result_tsv, file_non_empty, "non-empty")
         .or_die_if(true);
 
@@ -300,23 +293,25 @@ std::filesystem::path Pipeline::process_platon_output(const std::filesystem::pat
     auto result_tsv = platon_dir / "result.tsv";
     auto output_tsv = platon_dir / "result_p.tsv";
 
-    std::string content = read_file(result_tsv);
-
-    std::string body;
-    try {
-        body = classify_platon_tsv(content);
-    } catch (const HyplasError&) {
-        if (config_.soft_fail) soft_fail_exit();
-        log("ERROR", "RDS column not found in Platon output");
-        std::exit(EXIT_FAILURE);
-    }
-
-    std::ofstream out(output_tsv);
-    if (!out) {
-        log("ERROR", "Cannot open Platon output file");
-        std::exit(EXIT_FAILURE);
-    }
-    out << body;
+    stage("platon classification table", stage_options())
+        .call([this](const std::filesystem::path& src, const std::filesystem::path& dst) {
+            std::string body;
+            try {
+                body = classify_platon_tsv(read_file(src));
+            } catch (const HyplasError&) {
+                if (config_.soft_fail) soft_fail_exit();
+                log("ERROR", "RDS column not found in Platon output");
+                return 1;
+            }
+            std::ofstream out(dst);
+            if (!out) {
+                log("ERROR", "Cannot open Platon output file");
+                return 1;
+            }
+            out << body;
+            return 0;
+        }, in(result_tsv), out(output_tsv))
+        .or_die_if(true);
 
     return output_tsv;
 }
@@ -328,34 +323,28 @@ std::filesystem::path Pipeline::run_minigraph_lr_to_sr(
     auto sr_graph = output_dir_ / "unicycler_sr" / "assembly.gfa";
     auto sr_graph_fix = output_dir_ / "unicycler_sr" / "assembly_segfix.gfa";
 
-    if (!config_.force && file_readable(gaf_output)) {
-        log("WARNING", "Minigraph output exists (" + gaf_output.filename().string() +
-                       "), skipping. Use --force to rerun.");
-        return gaf_output;
-    }
-
-    // Fix empty segments once per pipeline (idempotent)
-    if (!file_readable(sr_graph_fix)) {
-        try {
-            fix_gfa_empty_segments(sr_graph, sr_graph_fix);
-        } catch (const HyplasError& e) {
-            if (config_.soft_fail) soft_fail_exit();
-            log("ERROR", e.what());
-            std::exit(EXIT_FAILURE);
-        }
-    }
-
     RunOptions opts;
     opts.stdout_file = gaf_output;
+    opts.outputs = {gaf_output};
 
-    stage("minigraph LR to SR assembly")
+    stage("minigraph LR to SR assembly", stage_options())
         .expect_which("minigraph")
+        // Fix empty segments once per pipeline; redone only when the graph changes.
+        .call([this](const std::filesystem::path& src, const std::filesystem::path& dst) {
+            try {
+                fix_gfa_empty_segments(src, dst);
+                return 0;
+            } catch (const HyplasError& e) {
+                log("ERROR", e.what());
+                return 1;
+            }
+        }, in(sr_graph), out(sr_graph_fix))
         .expect_file(sr_graph_fix, file_non_empty, "non-empty")
         .expect_file(reads_fastq, file_non_empty, "non-empty")
         .proc({
             "minigraph",
-            sr_graph_fix.string(),
-            reads_fastq.string(),
+            in(sr_graph_fix),
+            in(reads_fastq),
             "-t", std::to_string(config_.threads),
             "-x", "lr",
             "-c"
@@ -385,18 +374,6 @@ ReadSelectionResult Pipeline::run_long_read_selection(
     result.unknown_neither = plasmid_lr_path / "unknown_neither.fastq.gz";
     result.unmapped = plasmid_lr_path / "unmapped.fastq.gz";
 
-    const auto valid_cached_fastq = [](const std::filesystem::path& path) {
-        return file_readable(path) && file_is_gzipped(path) && file_is_fastq(path);
-    };
-    if (!config_.force &&
-        valid_cached_fastq(result.plasmid_reads) &&
-        valid_cached_fastq(result.unknown_both) &&
-        valid_cached_fastq(result.unknown_neither) &&
-        valid_cached_fastq(result.unmapped)) {
-        log("WARNING", "Read selection outputs exist, skipping. Use --force to rerun.");
-        return result;
-    }
-
     SplitPlasmidReadsParams split_params;
     split_params.gaf_path = graph_alignment.string();
     split_params.fastq_path = config_.long_reads->string();
@@ -406,8 +383,10 @@ ReadSelectionResult Pipeline::run_long_read_selection(
     split_params.unknown_both_path = result.unknown_both.string();
     split_params.unmapped_path = result.unmapped.string();
 
-    stage("split-plasmid-reads")
-        .expect_success(split_plasmid_reads(split_params))
+    stage("split-plasmid-reads", stage_options())
+        .call([&](auto&&...) { return split_plasmid_reads(split_params); },
+              in(graph_alignment), in(*config_.long_reads), in(prediction_tsv),
+              out(result.plasmid_reads), out(result.unknown_both), out(result.unknown_neither), out(result.unmapped))
         .expect_file(result.plasmid_reads, file_is_gzipped_fastq, "gzipped FASTQ")
         .expect_file(result.unknown_both, file_is_gzipped_fastq, "gzipped FASTQ")
         .expect_file(result.unknown_neither, file_is_gzipped_fastq, "gzipped FASTQ")
@@ -474,10 +453,6 @@ std::filesystem::path Pipeline::extract_missing_long_reads(
     auto output_path = plasmid_alignment;
     output_path.replace_extension(".fastq.gz");
 
-    if (!config_.force && file_readable(output_path)) {
-        log("WARNING", "Extracted reads exist, skipping.");
-        return output_path;
-    }
     SelectMissingReadsParams select_params;
     select_params.paf_path = plasmid_alignment.string();
     for (const auto& path : unknown_reads) {
@@ -485,8 +460,9 @@ std::filesystem::path Pipeline::extract_missing_long_reads(
     }
     select_params.output_path = output_path.string();
 
-    stage("select-missing-reads")
-        .expect_success(select_missing_reads(select_params))
+    stage("select-missing-reads", stage_options())
+        .call([&](auto&&...) { return select_missing_reads(select_params); },
+              in(plasmid_alignment), out(output_path))
         .expect_file(output_path, file_is_gzipped_fastq, "gzipped FASTQ")
         .or_die_if(!config_.soft_fail)
         .or_execute([this]{ soft_fail_exit(); });
@@ -911,12 +887,10 @@ int Pipeline::run() {
 
         // 2. Concatenate all plasmid reads and map them to the SR graph.
         auto concat_plasmid = comp_dir / "plasmid_reads.all.fastq.gz";
-        if (config_.force || !file_readable(concat_plasmid)) {
-            if (!concat_files_binary(accumulated, concat_plasmid)) {
-                log("ERROR", "Failed to concatenate plasmid reads for component extraction");
-                std::exit(EXIT_FAILURE);
-            }
-        }
+        stage("concatenate plasmid reads", stage_options())
+            .call([&](const std::filesystem::path& dst) { return concat_files_binary(accumulated, dst) ? 0 : 1; },
+                  out(concat_plasmid))
+            .or_die_if(true);
         auto plasmid_gaf = comp_dir / "plasmid_lr2assembly.gaf";
         run_minigraph_lr_to_sr(concat_plasmid, plasmid_gaf);
 
@@ -951,10 +925,13 @@ int Pipeline::run() {
 
             auto cdir = comp_dir / ("comp_" + std::to_string(comp.id));
             auto comp_lr = cdir / "lr_reads.fastq.gz";
-            if (config_.force || !file_readable(comp_lr)) {
-                gtl::flat_hash_set<std::string> ids(it->second.begin(), it->second.end());
-                write_reads_by_id(concat_plasmid, ids, comp_lr);
-            }
+            stage("component " + std::to_string(comp.id) + " reads", stage_options())
+                .call([&](const std::filesystem::path& pool, const std::filesystem::path& dst) {
+                    gtl::flat_hash_set<std::string> ids(it->second.begin(), it->second.end());
+                    write_reads_by_id(pool, ids, dst);
+                    return 0;
+                }, in(concat_plasmid), out(comp_lr))
+                .or_die_if(true);
             comp_read_files[comp.id] = {comp_lr};
         }
 
