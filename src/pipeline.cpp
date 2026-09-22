@@ -148,10 +148,10 @@ std::filesystem::path Pipeline::run_unicycler_sr_assembly() {
     }
 
     auto sr_stage = stage("unicycler SR assembly").expect_which("unicycler_hyplas_modified");
-    for (const auto& sr : config_.short_reads) sr_stage.expect_file(sr, Expect::NON_EMPTY);
+    for (const auto& sr : config_.short_reads) sr_stage.expect_file(sr, file_non_empty, "non-empty");
     sr_stage.proc(cmd)
-        .expect_file(assembly_gfa, Expect::NON_EMPTY)
-        .expect_file(assembly_fasta, Expect::NON_EMPTY)
+        .expect_file(assembly_gfa, file_non_empty, "non-empty")
+        .expect_file(assembly_fasta, file_non_empty, "non-empty")
         .expect_file(assembly_fasta, file_is_fasta, "FASTA")
         .or_die_if(!config_.soft_fail)
         .or_execute([this]{ soft_fail_exit(); });
@@ -192,9 +192,9 @@ std::filesystem::path Pipeline::run_spades_sr_assembly() {
     }
 
     auto spades_stage = stage("SPAdes SR assembly").expect_which("spades.py");
-    for (const auto& sr : config_.short_reads) spades_stage.expect_file(sr, Expect::NON_EMPTY);
+    for (const auto& sr : config_.short_reads) spades_stage.expect_file(sr, file_non_empty, "non-empty");
     spades_stage.proc(cmd)
-        .expect_file(spades_gfa, Expect::NON_EMPTY)
+        .expect_file(spades_gfa, file_non_empty, "non-empty")
         .or_die_if(!config_.soft_fail)
         .or_execute([this]{ soft_fail_exit(); });
 
@@ -257,7 +257,7 @@ void Pipeline::setup_from_existing_assembly() {
     auto mock_fq = make_temp("mock_sr.fq");
     stage("unicycler setup from existing assembly")
         .expect_which("unicycler_hyplas_modified")
-        .expect_file(gfa_path, Expect::NON_EMPTY)
+        .expect_file(gfa_path, file_non_empty, "non-empty")
         .proc({
             "unicycler_hyplas_modified",
             "-s", mock_fq.string(),
@@ -281,7 +281,7 @@ std::filesystem::path Pipeline::run_platon_classifier() {
 
     stage("platon classification")
         .expect_which("platon")
-        .expect_file(unicycler_fasta, Expect::NON_EMPTY)
+        .expect_file(unicycler_fasta, file_non_empty, "non-empty")
         .proc({
             "platon",
             "-c",
@@ -291,7 +291,7 @@ std::filesystem::path Pipeline::run_platon_classifier() {
             "--output", platon_path.string(),
             unicycler_fasta.string()
         })
-        .expect_file(result_tsv, Expect::NON_EMPTY)
+        .expect_file(result_tsv, file_non_empty, "non-empty")
         .or_die_if(true);
 
     return platon_path;
@@ -351,8 +351,8 @@ std::filesystem::path Pipeline::run_minigraph_lr_to_sr(
 
     stage("minigraph LR to SR assembly")
         .expect_which("minigraph")
-        .expect_file(sr_graph_fix, Expect::NON_EMPTY)
-        .expect_file(reads_fastq, Expect::NON_EMPTY)
+        .expect_file(sr_graph_fix, file_non_empty, "non-empty")
+        .expect_file(reads_fastq, file_non_empty, "non-empty")
         .proc({
             "minigraph",
             sr_graph_fix.string(),
@@ -361,7 +361,7 @@ std::filesystem::path Pipeline::run_minigraph_lr_to_sr(
             "-x", "lr",
             "-c"
         }, opts)
-        .expect_file(gaf_output, Expect::NON_EMPTY)
+        .expect_file(gaf_output, file_non_empty, "non-empty")
         .or_die_if(!config_.soft_fail)
         .or_execute([this]{ soft_fail_exit(); });
 
@@ -462,26 +462,20 @@ std::filesystem::path Pipeline::find_missing_long_reads(
             .or_execute([this]{ soft_fail_exit(); });
     }
 
-    // Run minimap2
-    std::vector<std::string> minimap_cmd = {
-        "minimap2",
-        temp_filtered_path.string()
-    };
-    for (const auto& pf : plasmid_files) {
-        minimap_cmd.emplace_back(pf.string());
-    }
-    minimap_cmd.emplace_back("-o");
-    minimap_cmd.emplace_back(paf_output.string());
-    minimap_cmd.emplace_back("-t");
-    minimap_cmd.emplace_back(std::to_string(config_.threads));
-
-    auto mm_stage = stage("minimap2 propagation round " + std::to_string(round))
+    // Run minimap2: one recipe for every propagation round and component.
+    static const StageTemplate propagate = StageTemplate("minimap2 propagation")
         .expect_which("minimap2")
-        .expect_file(temp_filtered_path, Expect::NON_EMPTY);
-    for (const auto& pf : plasmid_files) mm_stage.expect_file(pf);
-    mm_stage.proc(minimap_cmd)
-        .expect_file(paf_output)
-        .or_die_if(!config_.soft_fail)
+        .expect_file(slot{"query"}, file_non_empty, "non-empty")
+        .expect_file(many{"plasmids"})
+        .proc({"minimap2", slot{"query"}, many{"plasmids"},
+               "-o", slot{"paf"}, "-t", slot{"threads"}})
+        .expect_file(slot{"paf"});
+
+    propagate.launch({{"query", temp_filtered_path},
+                    {"plasmids", plasmid_files},
+                    {"paf", paf_output},
+                    {"threads", std::to_string(config_.threads)}})
+        .or_die_if(!config_.soft_fail, "minimap2 propagation round " + std::to_string(round))
         .or_execute([this]{ soft_fail_exit(); });
 
     return paf_output;

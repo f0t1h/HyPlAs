@@ -32,11 +32,14 @@
 
 namespace hyplas {
 
-using shrn::Expect;
 using shrn::Outcome;
 using shrn::RunOptions;
 using shrn::RunResult;
+using shrn::StageTemplate;
+using shrn::file_non_empty;
 using shrn::file_readable;
+using shrn::many;
+using shrn::slot;
 using shrn::stage;
 using shrn::which;
 
@@ -264,9 +267,9 @@ enum class concat_mode {
  *
  *   stage("minigraph alignment")
  *       .expect_which("minigraph")
- *       .expect_file(graph, Expect::NON_EMPTY)
+ *       .expect_file(graph, file_non_empty, "non-empty")
  *       .proc({"minigraph", graph, reads}, opts)
- *       .expect_file(output, Expect::NON_EMPTY)
+ *       .expect_file(output, file_non_empty, "non-empty")
  *       .or_die_if(!soft_fail);
  */
 inline void install_spawn_logger() {
