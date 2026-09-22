@@ -70,7 +70,7 @@ int main(int argc, char* argv[]) {
         "Bin SR contigs into GFA-connected components and run hybrid assembly per component");
 
     app.add_flag("--keep-temp", config.keep_temp,
-        "Keep the tmp/ directory after pipeline completes (useful for debugging)");
+        "Keep each stage's temp directory under <output>/tmp instead of removing it (useful for debugging)");
     
     // Parse with allow_extras to handle --check-deps before validation
     try {

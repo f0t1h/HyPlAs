@@ -13,6 +13,11 @@
 #include <gtl/phmap.hpp>
 #include <vector>
 
+namespace shrn {
+struct StageOptions;
+class Outcome;
+}
+
 namespace hyplas {
 
 /**
@@ -76,10 +81,12 @@ public:
 private:
     const PipelineConfig& config_;
     std::filesystem::path output_dir_;
-    std::filesystem::path tmp_dir_;
     std::filesystem::path prediction_tsv_;
 
-    std::filesystem::path make_temp(const std::string& name) const;
+    /// Stage temps live under <output>/tmp and honor --keep-temp.
+    shrn::StageOptions stage_options() const;
+    /// With --keep-temp, log where a finished stage left its temp files (if it used any).
+    void note_kept_temps(const shrn::Outcome& stage) const;
     
     // Pipeline stages
     std::filesystem::path run_unicycler_sr_assembly();
@@ -114,9 +121,6 @@ private:
         const std::filesystem::path& prediction_tsv) const;
     gtl::flat_hash_map<int, std::vector<std::string>> bin_reads_to_components(
         const std::filesystem::path& gaf_path,
-        const gtl::flat_hash_map<std::string, int>& segment_to_component) const;
-    gtl::flat_hash_map<int, std::vector<std::string>> bin_reads_via_minigraph(
-        const std::filesystem::path& reads_fastq,
         const gtl::flat_hash_map<std::string, int>& segment_to_component) const;
     void init_component_unicycler_sr(
         const std::filesystem::path& comp_gfa,

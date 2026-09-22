@@ -47,20 +47,18 @@ int check_dependencies(bool use_spades) {
 
 Pipeline::Pipeline(const PipelineConfig& config)
     : config_(config)
-    , output_dir_(config.output_directory)
-    , tmp_dir_(config.output_directory / "tmp") {
+    , output_dir_(config.output_directory) {
     set_log_level(config.verbosity);
 }
 
-std::filesystem::path Pipeline::make_temp(const std::string& name) const {
-    ensure_directory(tmp_dir_);
-    auto path = tmp_dir_ / name;
-    std::ofstream file(path);
-    if (!file) {
-        log("ERROR", "Cannot create temp file: " + path.string());
-        std::exit(EXIT_FAILURE);
+shrn::StageOptions Pipeline::stage_options() const {
+    return {.keep_temps = config_.keep_temp, .temp_dir = output_dir_ / "tmp"};
+}
+
+void Pipeline::note_kept_temps(const shrn::Outcome& stage) const {
+    if (const auto* dir = config_.keep_temp ? stage.work_dir() : nullptr) {
+        log("INFO", "Kept temp files in " + dir->string());
     }
-    return path;
 }
 
 void Pipeline::log(const std::string& level, const std::string& message) const {
@@ -252,16 +250,17 @@ void Pipeline::setup_from_existing_assembly() {
     std::filesystem::copy_file(*config_.sr_assembly, gfa_path,
                                std::filesystem::copy_options::overwrite_existing);
 
-    // Run unicycler with mock input to set up directory structure
-    // (This matches the Python behavior)
-    auto mock_fq = make_temp("mock_sr.fq");
-    stage("unicycler setup from existing assembly")
+    // Run unicycler with an empty placeholder read file to set up the directory
+    // structure (matches the Python behavior).
+    stage("unicycler setup from existing assembly", stage_options())
         .expect_which("unicycler_hyplas_modified")
         .expect_file(gfa_path, file_non_empty, "non-empty")
+        .call([](const std::filesystem::path& mock) { return std::ofstream(mock) ? 0 : 1; },
+              temp_file{"mock_sr.fq"})
         .proc({
             "unicycler_hyplas_modified",
-            "-s", mock_fq.string(),
-            "-o", unicycler_sr_path.string()
+            "-s", temp_file{"mock_sr.fq"},
+            "-o", unicycler_sr_path
         })
         .or_die_if(true);
 
@@ -438,45 +437,31 @@ std::filesystem::path Pipeline::find_missing_long_reads(
         return paf_output;
     }
 
-    // Tag temporary filtered output by propagation round and component.
-    auto tag = (comp_id >= 0)
-        ? ("r" + std::to_string(round) + "_c" + std::to_string(comp_id))
-        : ("r" + std::to_string(round));
+    // Filter the unknown reads with innotin, then align the filtered set to the
+    // plasmid reads. The filtered FASTA is scratch private to this stage.
+    InnotinParams innotin_params;
+    for (const auto& path : unknown_files) innotin_params.main_fastqs.emplace_back(path.string());
+    for (const auto& pf : plasmid_files) innotin_params.subset_fastqs.emplace_back(pf.string());
 
-    // Run innotin to filter reads
-    auto temp_filtered_path = make_temp("filtered_unknown_" + tag + ".fasta");
-    {
-        InnotinParams innotin_params;
-        for (const auto& path : unknown_files) {
-            innotin_params.main_fastqs.emplace_back(path.string());
-        }
-        for (const auto& pf : plasmid_files) {
-            innotin_params.subset_fastqs.emplace_back(pf.string());
-        }
-        innotin_params.output_path = temp_filtered_path;
-
-        stage("innotin")
-            .expect_success(innotin(innotin_params))
-            .expect_file(temp_filtered_path, file_is_fasta, "FASTA")
-            .or_die_if(!config_.soft_fail)
-            .or_execute([this]{ soft_fail_exit(); });
-    }
-
-    // Run minimap2: one recipe for every propagation round and component.
-    static const StageTemplate propagate = StageTemplate("minimap2 propagation")
+    const auto propagate = StageTemplate("minimap2 propagation", stage_options())
         .expect_which("minimap2")
-        .expect_file(slot{"query"}, file_non_empty, "non-empty")
+        .call([innotin_params](const std::filesystem::path& filtered) mutable {
+            innotin_params.output_path = filtered.string();
+            return innotin(innotin_params);
+        }, temp_file{"filtered_unknown.fasta"})
+        .expect_file(temp_file{"filtered_unknown.fasta"}, file_is_fasta, "FASTA")
+        .expect_file(temp_file{"filtered_unknown.fasta"}, file_non_empty, "non-empty")
         .expect_file(many{"plasmids"})
-        .proc({"minimap2", slot{"query"}, many{"plasmids"},
+        .proc({"minimap2", temp_file{"filtered_unknown.fasta"}, many{"plasmids"},
                "-o", slot{"paf"}, "-t", slot{"threads"}})
         .expect_file(slot{"paf"});
 
-    propagate.launch({{"query", temp_filtered_path},
-                    {"plasmids", plasmid_files},
-                    {"paf", paf_output},
-                    {"threads", std::to_string(config_.threads)}})
-        .or_die_if(!config_.soft_fail, "minimap2 propagation round " + std::to_string(round))
+    auto round_stage = propagate.launch({{"plasmids", plasmid_files},
+                                         {"paf", paf_output},
+                                         {"threads", std::to_string(config_.threads)}});
+    round_stage.or_die_if(!config_.soft_fail, "minimap2 propagation round " + std::to_string(round))
         .or_execute([this]{ soft_fail_exit(); });
+    note_kept_temps(round_stage);
 
     return paf_output;
 }
@@ -512,7 +497,7 @@ std::filesystem::path Pipeline::extract_missing_long_reads(
 std::filesystem::path Pipeline::run_unicycler_lr_assembly(
     const std::vector<std::filesystem::path>& plasmid_files,
     int iteration,
-    int comp_id) {
+    int /*comp_id*/) {
 
     auto unicycler_sr_path = output_dir_ / "unicycler_sr";
     auto unicycler_lr_path = output_dir_ / ("unicycler_lr_" + std::to_string(iteration));
@@ -534,22 +519,16 @@ std::filesystem::path Pipeline::run_unicycler_lr_assembly(
     remove_if_exists(unicycler_lr_path / "assembly.fasta");
     remove_if_exists(unicycler_lr_path / "assembly.gfa");
 
-    // Build tag for temp file naming (includes comp_id when in per-component context)
-    auto tag = "iter" + std::to_string(iteration) +
-               (comp_id >= 0 ? "_c" + std::to_string(comp_id) : "");
+    auto lr_stage = stage("unicycler LR assembly iteration " + std::to_string(iteration), stage_options());
 
     // Unicycler accepts gzip input. Reuse one stream directly or concatenate
-    // gzip members byte-for-byte instead of materializing plain FASTQ.
+    // gzip members byte-for-byte into stage scratch instead of materializing plain FASTQ.
     std::filesystem::path lr_input;
     if (plasmid_files.size() == 1) {
         lr_input = plasmid_files.front();
     } else {
-        lr_input = tmp_dir_ / ("lr_concat_" + tag + ".fastq.gz");
-        if (!concat_files_binary(plasmid_files, lr_input)) {
-            if (config_.soft_fail) soft_fail_exit();
-            log("ERROR", "Failed to concatenate plasmid reads");
-            std::exit(EXIT_FAILURE);
-        }
+        lr_input = lr_stage.temp_path("lr_concat.fastq.gz");
+        lr_stage.call([&] { return concat_files_binary(plasmid_files, lr_input) ? 0 : 1; });
     }
 
     std::vector<std::string> cmd = {
@@ -561,30 +540,26 @@ std::filesystem::path Pipeline::run_unicycler_lr_assembly(
         "-l", lr_input.string()
     };
 
-    // Handle short reads
+    // Short reads, or empty placeholders when none were provided.
     if (config_.short_reads.empty()) {
-        auto empty_fq1 = make_temp("empty_sr1_" + tag + ".fq");
-        auto empty_fq2 = make_temp("empty_sr2_" + tag + ".fq");
-        cmd.emplace_back("-1");
-        cmd.emplace_back(empty_fq1.string());
-        cmd.emplace_back("-2");
-        cmd.emplace_back(empty_fq2.string());
+        auto empty_fq1 = lr_stage.temp_path("empty_sr1.fq");
+        auto empty_fq2 = lr_stage.temp_path("empty_sr2.fq");
+        lr_stage.call([&] { return (std::ofstream(empty_fq1) && std::ofstream(empty_fq2)) ? 0 : 1; });
+        cmd.insert(cmd.end(), {"-1", empty_fq1.string(), "-2", empty_fq2.string()});
     } else {
-        cmd.emplace_back("-1");
-        cmd.emplace_back(config_.short_reads[0].string());
+        cmd.insert(cmd.end(), {"-1", config_.short_reads[0].string()});
         if (config_.short_reads.size() > 1) {
-            cmd.emplace_back("-2");
-            cmd.emplace_back(config_.short_reads[1].string());
+            cmd.insert(cmd.end(), {"-2", config_.short_reads[1].string()});
         }
     }
 
-    stage("unicycler LR assembly iteration " + std::to_string(iteration))
-        .expect_which("unicycler_hyplas_modified")
+    lr_stage.expect_which("unicycler_hyplas_modified")
         .expect_file(lr_input)
         .proc(cmd)
         .expect_file(assembly_fasta, file_is_fasta, "FASTA")
         .or_die_if(!config_.soft_fail)
         .or_execute([this]{ soft_fail_exit(); });
+    note_kept_temps(lr_stage);
 
     return assembly_fasta;
 }
@@ -701,39 +676,6 @@ gtl::flat_hash_map<int, std::vector<std::string>> Pipeline::bin_reads_to_compone
     }
 
     return result;
-}
-
-gtl::flat_hash_map<int, std::vector<std::string>> Pipeline::bin_reads_via_minigraph(
-    const std::filesystem::path& reads_fastq,
-    const gtl::flat_hash_map<std::string, int>& segment_to_component) const
-{
-    auto sr_graph_fix = output_dir_ / "unicycler_sr" / "assembly_segfix.gfa";
-    if (!file_readable(sr_graph_fix)) {
-        log("WARNING", "assembly_segfix.gfa not found; skipping minigraph binning of new reads");
-        return {};
-    }
-
-    auto temp_gaf = make_temp("binning_reads.gaf");
-    RunOptions opts;
-    opts.stdout_file = temp_gaf;
-
-    (void) stage("minigraph new reads to SR assembly")
-        .expect_which("minigraph")
-        .expect_file(reads_fastq)
-        .proc({
-            "minigraph",
-            sr_graph_fix.string(),
-            reads_fastq.string(),
-            "-t", std::to_string(config_.threads),
-            "-x", "lr",
-            "-c"
-        }, opts);
-
-    if (!file_readable(temp_gaf)) {
-        return {};
-    }
-
-    return bin_reads_to_components(temp_gaf, segment_to_component);
 }
 
 void Pipeline::init_component_unicycler_sr(
@@ -882,7 +824,6 @@ int Pipeline::run() {
     log("INFO", "Output directory: " + output_dir_.string());
 
     ensure_directory(output_dir_);
-    ensure_directory(tmp_dir_);
 
     // 1. SR assembly (or use provided --sr-assembly)
     if (config_.sr_assembly) {
@@ -1063,11 +1004,7 @@ int Pipeline::run() {
         }
     }
 
-    if (!config_.keep_temp) {
-        std::filesystem::remove_all(tmp_dir_);
-    } else {
-        log("INFO", "Keeping temp directory: " + tmp_dir_.string());
-    }
+    // Stage temp directories clean themselves up (or stay, with --keep-temp).
 
     log("INFO", "Pipeline completed successfully");
     return 0;

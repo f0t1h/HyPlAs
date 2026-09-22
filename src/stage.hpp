@@ -41,6 +41,7 @@ using shrn::file_readable;
 using shrn::many;
 using shrn::slot;
 using shrn::stage;
+using shrn::temp_file;
 using shrn::which;
 
 namespace detail {
