@@ -17,7 +17,6 @@
 
 #include <zlib.h>
 
-#include "error.hpp"
 #include "mio.hpp"
 #include "mview.hpp"
 
@@ -49,17 +48,11 @@ struct AlignmentEntry {
  *
  * Replaces the previous popen("gzip - > file") pattern: no shell, no injection
  * surface. Default-constructed instances are closed; open() reports failure by
- * returning false, while the path constructor throws HyplasError.
+ * returning false.
  */
 class GzWriter {
 public:
     GzWriter() = default;
-
-    explicit GzWriter(const std::filesystem::path& path) {
-        if (!open(path)) {
-            throw HyplasError("cannot open gzip output: " + path.string());
-        }
-    }
 
     ~GzWriter() { close(); }
 
@@ -159,11 +152,11 @@ struct SplitPlasmidReadsParams {
 
 /**
  * @brief Copy the reads of @p source_fastq whose ids are in @p ids into a
- *        gzip FASTQ file. Throws HyplasError on I/O failure.
+ *        gzip FASTQ file. Returns 0 on success, 1 on I/O failure.
  */
-void write_reads_by_id(const std::filesystem::path& source_fastq,
-                       const gtl::flat_hash_set<std::string>& ids,
-                       const std::filesystem::path& output_fastq_gz);
+[[nodiscard]] int write_reads_by_id(const std::filesystem::path& source_fastq,
+                                    const gtl::flat_hash_set<std::string>& ids,
+                                    const std::filesystem::path& output_fastq_gz);
 
 } // namespace hyplas
 

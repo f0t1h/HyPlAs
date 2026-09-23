@@ -2,9 +2,9 @@
  * @file stage.hpp
  * @brief HyPlAs glue over shrn: stage execution, output checks, file helpers.
  *
- * shrn (v0.3) reports failures as plain strings/bools; this layer applies
- * HyPlAs policy: throw HyplasError where callers cannot continue, add
- * FASTQ/FASTA checks and the "[INFO] [stage] Running:" log line.
+ * shrn reports failures as plain strings/bools; this layer adds HyPlAs policy:
+ * FASTQ/FASTA checks, the "[INFO] [stage] Running:" log line, and file helpers
+ * that report failure through their return value so they slot into stages.
  *
  * Gzip-aware file utilities (file_is_gzipped, file_first_byte, line_count,
  * concat_files) live here rather than in shrn so shrn stays focused on
@@ -13,8 +13,6 @@
 
 #ifndef HYPLAS_STAGE_HPP
 #define HYPLAS_STAGE_HPP
-
-#include "error.hpp"
 
 #include <shrn.hpp>
 
@@ -89,11 +87,13 @@ inline std::size_t count_newlines(const char* data, std::size_t n) noexcept {
 // Filesystem helpers (owned by HyPlAs; shrn keeps only ensure_directory)
 // ---------------------------------------------------------------------------
 
-/// Whole file contents; throws HyplasError if unreadable. Sized read first,
-/// then drain, so /proc-style files reporting size 0 still read correctly.
-[[nodiscard]] inline std::string read_file(const std::filesystem::path& p) {
+using shrn::ensure_directory;
+
+/// Whole file contents, or nothing if unreadable. Sized read first, then
+/// drain, so /proc-style files reporting size 0 still read correctly.
+[[nodiscard]] inline std::optional<std::string> read_file(const std::filesystem::path& p) {
     std::ifstream in(p, std::ios::binary);
-    if (!in) throw HyplasError("cannot open file: " + p.string() + ": " + detail::errno_string());
+    if (!in) return std::nullopt;
 
     std::string out;
     std::error_code ec;
@@ -104,36 +104,37 @@ inline std::size_t count_newlines(const char* data, std::size_t n) noexcept {
             out.resize(static_cast<std::size_t>(sz));
             in.read(out.data(), static_cast<std::streamsize>(sz));
             out.resize(static_cast<std::size_t>(in.gcount()));
-            if (in.bad()) throw HyplasError("cannot read file: " + p.string());
+            if (in.bad()) return std::nullopt;
         }
     }
     char buffer[1 << 16];
     while (in.read(buffer, sizeof buffer) || in.gcount() > 0) {
         out.append(buffer, static_cast<std::size_t>(in.gcount()));
     }
-    if (in.bad()) throw HyplasError("cannot read file: " + p.string());
+    if (in.bad()) return std::nullopt;
     return out;
 }
 
-inline void ensure_directory(const std::filesystem::path& p) {
-    if (!shrn::ensure_directory(p)) {
-        throw HyplasError("cannot create directory: " + p.string() + ": " + detail::errno_string());
-    }
-}
-
 /// Remove a file; a missing file is not an error.
-inline void remove_if_exists(const std::filesystem::path& p) {
+[[nodiscard]] inline bool remove_if_exists(const std::filesystem::path& p) {
     std::error_code ec;
     std::filesystem::remove(p, ec);
-    if (ec) throw HyplasError("cannot remove: " + p.string() + ": " + ec.message());
+    return !ec;
 }
 
 /// Create a symlink, replacing an existing link/file at `link`.
-inline void force_symlink(const std::filesystem::path& target, const std::filesystem::path& link) {
-    remove_if_exists(link);
+[[nodiscard]] inline bool force_symlink(const std::filesystem::path& target, const std::filesystem::path& link) {
+    if (!remove_if_exists(link)) return false;
     std::error_code ec;
     std::filesystem::create_symlink(target, link, ec);
-    if (ec) throw HyplasError("cannot create symlink: " + link.string() + ": " + ec.message());
+    return !ec;
+}
+
+/// Copy a file, replacing any existing destination.
+[[nodiscard]] inline bool copy_file_over(const std::filesystem::path& from, const std::filesystem::path& to) {
+    std::error_code ec;
+    std::filesystem::copy_file(from, to, std::filesystem::copy_options::overwrite_existing, ec);
+    return !ec;
 }
 
 // ---------------------------------------------------------------------------

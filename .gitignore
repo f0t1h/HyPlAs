@@ -42,6 +42,7 @@ reference_run/
 cpp_run/
 cpp_test_run/
 test_*
+!tests/test_*.cpp
 *_test.log
 
 #Platon database

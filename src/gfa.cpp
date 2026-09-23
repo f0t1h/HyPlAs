@@ -5,7 +5,6 @@
 
 #include "gfa.hpp"
 
-#include "error.hpp"
 #include "log.hpp"
 #include "contig_classification.hpp"
 #include "mview.hpp"
@@ -21,13 +20,12 @@
 
 namespace hyplas {
 
-void fix_gfa_empty_segments(const std::filesystem::path& input,
-                            const std::filesystem::path& output) {
-    std::string buf = read_file(input);
+int fix_gfa_empty_segments(const std::filesystem::path& input,
+                           const std::filesystem::path& output) {
+    auto buf = read_file(input);
+    if (!buf) return 1;
     std::ofstream out(output);
-    if (!out) {
-        throw HyplasError("cannot open GFA output for empty segment fixing: " + output.string());
-    }
+    if (!out) return 1;
 
     gtl::flat_hash_set<std::string> empty_segments;
     gtl::flat_hash_map<std::string, std::vector<std::pair<std::string, std::string>>> incoming;
@@ -36,7 +34,7 @@ void fix_gfa_empty_segments(const std::filesystem::path& input,
     std::vector<std::string_view> deferred_lines;
 
     // First pass: identify empty segments and collect links
-    mview::for_each_line(buf, [&](std::string_view line) {
+    mview::for_each_line(*buf, [&](std::string_view line) {
         if (line.empty()) return;
 
         if (line[0] == 'S') {
@@ -84,10 +82,11 @@ void fix_gfa_empty_segments(const std::filesystem::path& input,
             }
         }
     }
+    return out ? 0 : 1;
 }
 
-void remove_gfa_overlaps(const std::filesystem::path& input,
-                         const std::filesystem::path& output) {
+int remove_gfa_overlaps(const std::filesystem::path& input,
+                        const std::filesystem::path& output) {
     // Graph-aware overlap removal equivalent to Unicycler's remove_all_overlaps().
     // SPAdes uses uniform k-mer overlap (e.g., 53M for k=53).
     //
@@ -117,7 +116,9 @@ void remove_gfa_overlaps(const std::filesystem::path& input,
         std::string tags;  // Optional GFA tags (MQ, NM, RC, FC, KC, ID, etc.)
     };
 
-    std::string buf = read_file(input);
+    auto buf_opt = read_file(input);
+    if (!buf_opt) return 1;
+    const std::string& buf = *buf_opt;
 
     // Parse GFA
     gtl::flat_hash_map<std::string, int64_t> name_to_id;
@@ -171,9 +172,7 @@ void remove_gfa_overlaps(const std::filesystem::path& input,
     if (overlap == 0) {
         log("INFO", "GFA has no overlaps - writing filtered S/L lines");
         std::ofstream out(output);
-        if (!out) {
-            throw HyplasError("cannot create output GFA file: " + output.string());
-        }
+        if (!out) return 1;
         for (const auto& h : header_lines) out << h << '\n';
         for (const auto& seg : segments) {
             out << "S\t" << seg.name << '\t' << seg.sequence;
@@ -187,7 +186,7 @@ void remove_gfa_overlaps(const std::filesystem::path& input,
             if (!link.tags.empty()) out << '\t' << link.tags;
             out << '\n';
         }
-        return;
+        return out ? 0 : 1;
     }
 
     log("INFO", "Removing " + std::to_string(overlap) + "bp overlaps from GFA");
@@ -354,9 +353,7 @@ void remove_gfa_overlaps(const std::filesystem::path& input,
 
     // Write output GFA
     std::ofstream out(output);
-    if (!out) {
-        throw HyplasError("cannot create output GFA file: " + output.string());
-    }
+    if (!out) return 1;
 
     // Write header lines
     for (const auto& h : header_lines) {
@@ -396,18 +393,18 @@ void remove_gfa_overlaps(const std::filesystem::path& input,
         }
         out << '\n';
     }
+    return out ? 0 : 1;
 }
 
-void extract_fasta_from_gfa(const std::filesystem::path& gfa,
-                            const std::filesystem::path& fasta,
-                            std::size_t min_length) {
-    std::string buf = read_file(gfa);
+int extract_fasta_from_gfa(const std::filesystem::path& gfa,
+                           const std::filesystem::path& fasta,
+                           std::size_t min_length) {
+    auto buf = read_file(gfa);
+    if (!buf) return 1;
     std::ofstream out(fasta);
-    if (!out) {
-        throw HyplasError("cannot open FASTA output: " + fasta.string());
-    }
+    if (!out) return 1;
 
-    mview::for_each_line(buf, [&](std::string_view line) {
+    mview::for_each_line(*buf, [&](std::string_view line) {
         if (line.empty() || line[0] != 'S') return;
 
         std::array<std::string_view, 4> f{};
@@ -419,20 +416,20 @@ void extract_fasta_from_gfa(const std::filesystem::path& gfa,
             out << '>' << name << '\n' << seq << '\n';
         }
     });
+    return out ? 0 : 1;
 }
 
-void write_component_gfa(const std::vector<std::string>& segments,
-                         const std::filesystem::path& source_gfa,
-                         const std::filesystem::path& output_gfa) {
+int write_component_gfa(const std::vector<std::string>& segments,
+                        const std::filesystem::path& source_gfa,
+                        const std::filesystem::path& output_gfa) {
     gtl::flat_hash_set<std::string> segs(segments.begin(), segments.end());
 
-    std::string buf = read_file(source_gfa);
+    auto buf = read_file(source_gfa);
+    if (!buf) return 1;
     std::ofstream out(output_gfa);
-    if (!out) {
-        throw HyplasError("cannot open GFA output for component extraction: " + output_gfa.string());
-    }
+    if (!out) return 1;
 
-    mview::for_each_line(buf, [&](std::string_view line) {
+    mview::for_each_line(*buf, [&](std::string_view line) {
         if (line.empty()) { out << '\n'; return; }
         if (line[0] == 'S') {
             std::array<std::string_view, 3> f{};
@@ -453,12 +450,14 @@ void write_component_gfa(const std::vector<std::string>& segments,
             out << line << '\n';
         }
     });
+    return out ? 0 : 1;
 }
 
-void append_circular_by_header(std::ostream& out,
-                               const std::filesystem::path& fasta,
-                               gtl::flat_hash_set<std::string>& written) {
-    std::string buf = read_file(fasta);
+int append_circular_by_header(std::ostream& out,
+                              const std::filesystem::path& fasta,
+                              gtl::flat_hash_set<std::string>& written) {
+    auto buf = read_file(fasta);
+    if (!buf) return 1;
 
     std::string header;
     std::string seq;
@@ -473,7 +472,7 @@ void append_circular_by_header(std::ostream& out,
         }
     };
 
-    mview::for_each_line(buf, [&](std::string_view line) {
+    mview::for_each_line(*buf, [&](std::string_view line) {
         if (line.empty()) return;
         if (line[0] == '>') {
             flush();
@@ -485,18 +484,20 @@ void append_circular_by_header(std::ostream& out,
         }
     });
     flush();
+    return out ? 0 : 1;
 }
 
-void append_circular_sr_plasmids(std::ostream& out,
-                                 const std::filesystem::path& gfa_path,
-                                 const std::filesystem::path& fasta_path,
-                                 const std::filesystem::path& prediction_tsv,
-                                 gtl::flat_hash_set<std::string>& written) {
+int append_circular_sr_plasmids(std::ostream& out,
+                                const std::filesystem::path& gfa_path,
+                                const std::filesystem::path& fasta_path,
+                                const std::filesystem::path& prediction_tsv,
+                                gtl::flat_hash_set<std::string>& written) {
     // Circular contigs: those with a self-loop link (from == to) in the GFA.
     gtl::flat_hash_set<std::string> circular_contigs;
     {
-        std::string gfa_buf = read_file(gfa_path);
-        mview::for_each_line(gfa_buf, [&](std::string_view line) {
+        auto gfa_buf = read_file(gfa_path);
+        if (!gfa_buf) return 1;
+        mview::for_each_line(*gfa_buf, [&](std::string_view line) {
             if (line.empty() || line[0] != 'L') return;
             std::array<std::string_view, 5> f{};
             std::size_t nf = mview::split_fields(line, '\t', f);
@@ -505,12 +506,14 @@ void append_circular_sr_plasmids(std::ostream& out,
             if (from == to) circular_contigs.insert(std::string(from));
         });
     }
-    if (circular_contigs.empty()) return;
+    if (circular_contigs.empty()) return 0;
 
-    gtl::flat_hash_set<std::string> plasmid_contigs =
-        plasmid_names(parse_prediction_tsv(prediction_tsv));
+    auto predictions = parse_prediction_tsv(prediction_tsv);
+    if (!predictions) return 1;
+    gtl::flat_hash_set<std::string> plasmid_contigs = plasmid_names(*predictions);
 
-    std::string fasta_buf = read_file(fasta_path);
+    auto fasta_buf = read_file(fasta_path);
+    if (!fasta_buf) return 1;
 
     std::string current_name;
     std::string current_seq;
@@ -524,7 +527,7 @@ void append_circular_sr_plasmids(std::ostream& out,
             written.insert(contig_name);
         }
     };
-    mview::for_each_line(fasta_buf, [&](std::string_view line) {
+    mview::for_each_line(*fasta_buf, [&](std::string_view line) {
         if (line.empty()) return;
         if (line[0] == '>') {
             write_if_match();
@@ -535,6 +538,7 @@ void append_circular_sr_plasmids(std::ostream& out,
         }
     });
     write_if_match();
+    return out ? 0 : 1;
 }
 
 } // namespace hyplas

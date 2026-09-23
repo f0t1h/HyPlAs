@@ -2,8 +2,9 @@
  * @file gfa.hpp
  * @brief GFA/FASTA graph transforms used by the HyPlAs pipeline
  *
- * These are pure functions over files. On unrecoverable errors they throw
- * HyplasError; the caller decides whether that triggers soft-fail recovery.
+ * These are pure functions over files. They return 0 on success and 1 when an
+ * input cannot be read or an output cannot be written, so they slot directly
+ * into a stage's call(); the stage's expect_file checks name the offending path.
  */
 
 #ifndef HYPLAS_GFA_HPP
@@ -24,8 +25,8 @@ namespace hyplas {
  * For every empty (sequence-less) segment, new 0M links are created that
  * connect each of its predecessors directly to each of its successors.
  */
-void fix_gfa_empty_segments(const std::filesystem::path& input,
-                            const std::filesystem::path& output);
+[[nodiscard]] int fix_gfa_empty_segments(const std::filesystem::path& input,
+                                         const std::filesystem::path& output);
 
 /**
  * @brief Remove k-mer overlaps from a GFA (Unicycler-style asymmetric trim).
@@ -33,24 +34,24 @@ void fix_gfa_empty_segments(const std::filesystem::path& input,
  * SPAdes emits uniform overlaps (e.g. 53M for k=53) that minigraph cannot
  * consume. This trims segment sequences and rewrites all links as 0M.
  */
-void remove_gfa_overlaps(const std::filesystem::path& input,
-                         const std::filesystem::path& output);
+[[nodiscard]] int remove_gfa_overlaps(const std::filesystem::path& input,
+                                      const std::filesystem::path& output);
 
 /**
  * @brief Write segment sequences from a GFA as FASTA records.
  * @param min_length Skip segments shorter than this many bases.
  */
-void extract_fasta_from_gfa(const std::filesystem::path& gfa,
-                            const std::filesystem::path& fasta,
-                            std::size_t min_length = 200);
+[[nodiscard]] int extract_fasta_from_gfa(const std::filesystem::path& gfa,
+                                         const std::filesystem::path& fasta,
+                                         std::size_t min_length = 200);
 
 /**
  * @brief Write a sub-GFA containing only the named segments and links between
  *        them. Path (P) lines are dropped; header/other lines pass through.
  */
-void write_component_gfa(const std::vector<std::string>& segments,
-                         const std::filesystem::path& source_gfa,
-                         const std::filesystem::path& output_gfa);
+[[nodiscard]] int write_component_gfa(const std::vector<std::string>& segments,
+                                      const std::filesystem::path& source_gfa,
+                                      const std::filesystem::path& output_gfa);
 
 /**
  * @brief Append FASTA records whose header contains "circular" to @p out.
@@ -59,9 +60,9 @@ void write_component_gfa(const std::vector<std::string>& segments,
  * a name already present in @p written is skipped, and newly written names are
  * inserted into it.
  */
-void append_circular_by_header(std::ostream& out,
-                               const std::filesystem::path& fasta,
-                               gtl::flat_hash_set<std::string>& written);
+[[nodiscard]] int append_circular_by_header(std::ostream& out,
+                                            const std::filesystem::path& fasta,
+                                            gtl::flat_hash_set<std::string>& written);
 
 /**
  * @brief Append circular, plasmid-classified SR contigs to @p out as FASTA.
@@ -70,11 +71,11 @@ void append_circular_by_header(std::ostream& out,
  * classified "plasmid" in @p prediction_tsv. The header gets a " circular"
  * suffix. Names already in @p written are skipped.
  */
-void append_circular_sr_plasmids(std::ostream& out,
-                                 const std::filesystem::path& gfa_path,
-                                 const std::filesystem::path& fasta_path,
-                                 const std::filesystem::path& prediction_tsv,
-                                 gtl::flat_hash_set<std::string>& written);
+[[nodiscard]] int append_circular_sr_plasmids(std::ostream& out,
+                                              const std::filesystem::path& gfa_path,
+                                              const std::filesystem::path& fasta_path,
+                                              const std::filesystem::path& prediction_tsv,
+                                              gtl::flat_hash_set<std::string>& written);
 
 } // namespace hyplas
 

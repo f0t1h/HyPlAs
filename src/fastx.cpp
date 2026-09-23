@@ -5,7 +5,6 @@
 
 #include "fastx.hpp"
 
-#include "error.hpp"
 #include "contig_classification.hpp"
 
 #include <cstdio>
@@ -230,11 +229,9 @@ int split_plasmid_reads(const SplitPlasmidReadsParams& params) {
         }
     }
 
-    gtl::flat_hash_map<std::string, ContigType> plasmid_contigs;
-    try {
-        plasmid_contigs = parse_prediction_tsv(params.prediction_path);
-    } catch (const HyplasError& e) {
-        std::fprintf(stderr, "%s\n", e.what());
+    auto plasmid_contigs = parse_prediction_tsv(params.prediction_path);
+    if (!plasmid_contigs) {
+        std::fprintf(stderr, "cannot open prediction TSV: %s\n", params.prediction_path.c_str());
         gzclose(fastq_fp);
         return EXIT_FAILURE;
     }
@@ -264,8 +261,8 @@ int split_plasmid_reads(const SplitPlasmidReadsParams& params) {
             MmapView contig_view = gaf_view.sub(v);
             std::string contig_name = static_cast<std::string>(contig_view);
 
-            auto it = plasmid_contigs.find(contig_name);
-            if (it != plasmid_contigs.end()) {
+            auto it = plasmid_contigs->find(contig_name);
+            if (it != plasmid_contigs->end()) {
                 if (it->second == ContigType::Chromosome) {
                     ++from_chromosome;
                 } else if (it->second == ContigType::Plasmid) {
@@ -297,18 +294,16 @@ int split_plasmid_reads(const SplitPlasmidReadsParams& params) {
 // write_reads_by_id: copy selected reads into a gzip FASTQ file
 // ---------------------------------------------------------------------------
 
-void write_reads_by_id(const std::filesystem::path& source_fastq,
-                       const gtl::flat_hash_set<std::string>& ids,
-                       const std::filesystem::path& output_fastq_gz) {
+int write_reads_by_id(const std::filesystem::path& source_fastq,
+                      const gtl::flat_hash_set<std::string>& ids,
+                      const std::filesystem::path& output_fastq_gz) {
     gzFile fp = gzopen(source_fastq.string().c_str(), "r");
-    if (!fp) {
-        throw HyplasError("cannot open FASTQ: " + source_fastq.string());
-    }
+    if (!fp) return 1;
 
     GzWriter out;
     if (!out.open(output_fastq_gz)) {
         gzclose(fp);
-        throw HyplasError("cannot open gzip output: " + output_fastq_gz.string());
+        return 1;
     }
 
     kseq_t* seq = kseq_init(fp);
@@ -319,6 +314,7 @@ void write_reads_by_id(const std::filesystem::path& source_fastq,
     }
     kseq_destroy(seq);
     gzclose(fp);
+    return 0;
 }
 
 } // namespace hyplas

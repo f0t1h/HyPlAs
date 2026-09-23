@@ -87,6 +87,8 @@ private:
     shrn::StageOptions stage_options() const;
     /// With --keep-temp, log where a finished stage left its temp files (if it used any).
     void note_kept_temps(const shrn::Outcome& stage) const;
+    /// Create a directory (and missing parents), exiting with a stage error on failure.
+    void require_directory(const std::filesystem::path& p) const;
     
     // Pipeline stages
     std::filesystem::path run_unicycler_sr_assembly();

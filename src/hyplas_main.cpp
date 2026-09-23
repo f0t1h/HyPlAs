@@ -4,7 +4,6 @@
  */
 
 #include "CLI11.hpp"
-#include "error.hpp"
 #include "pipeline.hpp"
 #include "stage.hpp"
 
@@ -119,11 +118,6 @@ int main(int argc, char* argv[]) {
     
     // Run pipeline
     hyplas::install_spawn_logger();
-    try {
-        hyplas::Pipeline pipeline(config);
-        return pipeline.run();
-    } catch (const hyplas::HyplasError& e) {
-        std::fprintf(stderr, "[ERROR] %s\n", e.what());
-        return EXIT_FAILURE;
-    }
+    hyplas::Pipeline pipeline(config);
+    return pipeline.run();
 }

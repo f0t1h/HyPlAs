@@ -16,7 +16,6 @@
 #include <vector>
 #include <gtl/phmap.hpp>
 
-#include "error.hpp"
 #include "mview.hpp"
 
 namespace hyplas {
@@ -36,14 +35,12 @@ enum class ContigType {
  * A row lacking a prediction column defaults to ContigType::Plasmid, matching
  * the legacy behavior of the original parser.
  *
- * @throws HyplasError if the file cannot be opened.
+ * Nothing if the file cannot be opened.
  */
-[[nodiscard]] inline gtl::flat_hash_map<std::string, ContigType>
+[[nodiscard]] inline std::optional<gtl::flat_hash_map<std::string, ContigType>>
 parse_prediction_tsv(const std::filesystem::path& path) {
     std::ifstream in(path, std::ios::binary);
-    if (!in) {
-        throw HyplasError("cannot open prediction TSV: " + path.string());
-    }
+    if (!in) return std::nullopt;
     std::string buf{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
 
     gtl::flat_hash_map<std::string, ContigType> result;
@@ -100,9 +97,9 @@ struct PlatonThresholds {
  *        buffer (header + rows), returning the "ID<TAB>PREDICTION" body for
  *        result_p.tsv.
  *
- * @throws HyplasError if the required RDS column is absent from the header.
+ * Nothing if the required RDS column is absent from the header.
  */
-[[nodiscard]] inline std::string
+[[nodiscard]] inline std::optional<std::string>
 classify_platon_tsv(std::string_view content, PlatonThresholds th = {}) {
     std::size_t nl = content.find('\n');
     std::string_view header = (nl == std::string_view::npos) ? content : content.substr(0, nl);
@@ -127,9 +124,7 @@ classify_platon_tsv(std::string_view content, PlatonThresholds th = {}) {
     int hits_col     = col("# Plasmid Hits");
     int rrna_col     = col("# rRNAs");
 
-    if (rds_col < 0) {
-        throw HyplasError("RDS column not found in Platon output");
-    }
+    if (rds_col < 0) return std::nullopt;
 
     auto to_double = [](std::string_view s) -> std::optional<double> {
         double v{};

@@ -4,7 +4,6 @@
  */
 
 #include "pipeline.hpp"
-#include "error.hpp"
 #include "fastx.hpp"
 #include "gfa.hpp"
 #include "log.hpp"
@@ -50,6 +49,15 @@ namespace {
 std::optional<std::filesystem::path> mate_of(const std::vector<std::filesystem::path>& reads) {
     return reads.size() > 1 ? std::optional(reads[1]) : std::nullopt;
 }
+/// Seed a unicycler output directory from an SR assembly directory, dropping
+/// the files unicycler regenerates.
+bool prepare_unicycler_dir(const std::filesystem::path& sr_dir, const std::filesystem::path& out_dir) {
+    std::error_code ec;
+    std::filesystem::copy(sr_dir, out_dir,
+                          std::filesystem::copy_options::recursive |
+                          std::filesystem::copy_options::overwrite_existing, ec);
+    return !ec && remove_if_exists(out_dir / "assembly.fasta") && remove_if_exists(out_dir / "assembly.gfa");
+}
 }  // namespace
 
 Pipeline::Pipeline(const PipelineConfig& config)
@@ -83,23 +91,31 @@ void Pipeline::write_circular_plasmid_contigs(
     int iteration) const {
 
     auto final_path = output_dir_ / ("plasmids.final.it" + std::to_string(iteration) + ".fasta");
-    std::ofstream out(final_path);
-    if (!out) {
-        throw HyplasError("cannot open output: " + final_path.string());
-    }
-    gtl::flat_hash_set<std::string> written;
-    append_circular_sr_plasmids(out, gfa_path, fasta_path, prediction_tsv, written);
+    stage("write circular plasmid contigs")
+        .expect_file(gfa_path)
+        .expect_file(fasta_path)
+        .expect_file(prediction_tsv)
+        .call([&](const std::filesystem::path& dst) {
+            std::ofstream out(dst);
+            if (!out) return 1;
+            gtl::flat_hash_set<std::string> written;
+            return append_circular_sr_plasmids(out, gfa_path, fasta_path, prediction_tsv, written);
+        }, final_path)
+        .or_die_if(true);
 }
 
 void Pipeline::write_circular_contigs(const std::filesystem::path& assembly_fasta,
-                                       int iteration) const {
+                                      int iteration) const {
     auto final_path = output_dir_ / ("plasmids.final.it" + std::to_string(iteration) + ".fasta");
-    std::ofstream out(final_path);
-    if (!out) {
-        throw HyplasError("cannot open output: " + final_path.string());
-    }
-    gtl::flat_hash_set<std::string> written;
-    append_circular_by_header(out, assembly_fasta, written);
+    stage("write circular contigs")
+        .expect_file(assembly_fasta)
+        .call([&](const std::filesystem::path& dst) {
+            std::ofstream out(dst);
+            if (!out) return 1;
+            gtl::flat_hash_set<std::string> written;
+            return append_circular_by_header(out, assembly_fasta, written);
+        }, final_path)
+        .or_die_if(true);
 }
 
 [[noreturn]] void Pipeline::soft_fail_exit() {
@@ -116,10 +132,18 @@ void Pipeline::write_circular_contigs(const std::filesystem::path& assembly_fast
 void Pipeline::symlink_remaining_iterations(int from_iteration) {
     auto source = output_dir_ / ("plasmids.final.it" + std::to_string(from_iteration) + ".fasta");
 
+    auto links = stage("link remaining iterations");
     for (int i = from_iteration + 1; i <= config_.propagate_rounds; ++i) {
         auto link = output_dir_ / ("plasmids.final.it" + std::to_string(i) + ".fasta");
-        force_symlink(source.filename(), link);
+        links.call([&](const std::filesystem::path& l) { return force_symlink(source.filename(), l) ? 0 : 1; }, link);
     }
+    links.or_die_if(true);
+}
+
+void Pipeline::require_directory(const std::filesystem::path& p) const {
+    stage("create " + p.filename().string())
+        .expect(ensure_directory(p), "cannot create directory: " + p.string())
+        .or_die_if(true);
 }
 
 // ============================================================================
@@ -135,7 +159,7 @@ std::filesystem::path Pipeline::run_unicycler_sr_assembly() {
     RunOptions opts;
     opts.outputs = {assembly_gfa, assembly_fasta};
 
-    ensure_directory(unicycler_sr_path);
+    require_directory(unicycler_sr_path);
 
     stage("unicycler SR assembly", stage_options())
         .expect_which("unicycler_hyplas_modified")
@@ -160,8 +184,8 @@ std::filesystem::path Pipeline::run_spades_sr_assembly() {
     auto unicycler_sr_path = output_dir_ / "unicycler_sr";
     auto spades_gfa = spades_path / "assembly_graph_with_scaffolds.gfa";
 
-    ensure_directory(spades_path);
-    ensure_directory(unicycler_sr_path);
+    require_directory(spades_path);
+    require_directory(unicycler_sr_path);
 
     RunOptions opts;
     opts.outputs = {spades_gfa};
@@ -194,54 +218,47 @@ void Pipeline::setup_from_spades_output() {
     auto spades_path = output_dir_ / "spades_sr";
     auto unicycler_sr_path = output_dir_ / "unicycler_sr";
 
-    ensure_directory(unicycler_sr_path);
+    require_directory(unicycler_sr_path);
 
-    // SPAdes GFA output location
+    // SPAdes writes the graph to one of two locations depending on version.
     auto spades_gfa = spades_path / "assembly_graph_with_scaffolds.gfa";
-    if (!file_readable(spades_gfa)) {
-        // Try alternative location
-        spades_gfa = spades_path / "assembly_graph.gfa";
-    }
-
-    if (!file_readable(spades_gfa)) {
-        log("ERROR", "SPAdes GFA output not found at expected locations");
-        std::exit(EXIT_FAILURE);
-    }
+    if (!file_readable(spades_gfa)) spades_gfa = spades_path / "assembly_graph.gfa";
 
     auto gfa_path = unicycler_sr_path / "assembly.gfa";
     auto fasta_path = unicycler_sr_path / "assembly.fasta";
-
-    // Remove overlaps from SPAdes GFA (equivalent to Unicycler's overlap removal)
-    // This is required for minigraph which doesn't support overlapping segments
-    remove_gfa_overlaps(spades_gfa, gfa_path);
-
-    // Also create 002_depth_filter.gfa for compatibility with rest of pipeline
     auto depth_filter_gfa = unicycler_sr_path / "002_depth_filter.gfa";
-    std::filesystem::copy_file(gfa_path, depth_filter_gfa,
-                               std::filesystem::copy_options::overwrite_existing);
 
-    // Extract FASTA from overlap-removed GFA
-    extract_fasta_from_gfa(gfa_path, fasta_path, 200);
+    // Remove overlaps (minigraph rejects overlapping segments), mirror the graph
+    // under the name the rest of the pipeline expects, and extract the FASTA.
+    stage("SPAdes graph setup", stage_options())
+        .expect_file(spades_gfa, file_non_empty, "non-empty")
+        .call(remove_gfa_overlaps, in(spades_gfa), out(gfa_path))
+        .expect_file(gfa_path, file_non_empty, "non-empty")
+        .call([](const std::filesystem::path& from, const std::filesystem::path& to) { return copy_file_over(from, to) ? 0 : 1; },
+              in(gfa_path), out(depth_filter_gfa))
+        .call([](const std::filesystem::path& gfa, const std::filesystem::path& fasta) { return extract_fasta_from_gfa(gfa, fasta, 200); },
+              in(gfa_path), out(fasta_path))
+        .expect_file(fasta_path, file_is_fasta, "FASTA")
+        .or_die_if(true);
 
     log("INFO", "SPAdes assembly set up in unicycler_sr directory");
 }
 
 void Pipeline::setup_from_existing_assembly() {
     auto unicycler_sr_path = output_dir_ / "unicycler_sr";
-    ensure_directory(unicycler_sr_path);
+    require_directory(unicycler_sr_path);
 
     auto gfa_path = unicycler_sr_path / "002_depth_filter.gfa";
     auto fasta_path = unicycler_sr_path / "assembly.fasta";
 
-    // Copy the provided assembly
-    std::filesystem::copy_file(*config_.sr_assembly, gfa_path,
-                               std::filesystem::copy_options::overwrite_existing);
-
-    // Run unicycler with an empty placeholder read file to set up the directory
-    // structure (matches the Python behavior).
+    // Copy the provided assembly, run unicycler with an empty placeholder read
+    // file to set up the directory structure (matches the Python behavior),
+    // then extract the FASTA.
     stage("unicycler setup from existing assembly", stage_options())
         .expect_which("unicycler_hyplas_modified")
-        .expect_file(gfa_path, file_non_empty, "non-empty")
+        .expect_file(*config_.sr_assembly, file_non_empty, "non-empty")
+        .call([](const std::filesystem::path& from, const std::filesystem::path& to) { return copy_file_over(from, to) ? 0 : 1; },
+              in(*config_.sr_assembly), out(gfa_path))
         .call([](const std::filesystem::path& mock) { return std::ofstream(mock) ? 0 : 1; },
               temp_file{"mock_sr.fq"})
         .proc({
@@ -249,10 +266,10 @@ void Pipeline::setup_from_existing_assembly() {
             "-s", temp_file{"mock_sr.fq"},
             "-o", unicycler_sr_path
         })
+        .call([](const std::filesystem::path& gfa, const std::filesystem::path& fasta) { return extract_fasta_from_gfa(gfa, fasta, 200); },
+              in(gfa_path), out(fasta_path))
+        .expect_file(fasta_path, file_is_fasta, "FASTA")
         .or_die_if(true);
-
-    // Extract FASTA from GFA
-    extract_fasta_from_gfa(gfa_path, fasta_path, 200);
 }
 
 std::filesystem::path Pipeline::run_platon_classifier() {
@@ -285,22 +302,19 @@ std::filesystem::path Pipeline::process_platon_output(const std::filesystem::pat
     auto output_tsv = platon_dir / "result_p.tsv";
 
     stage("platon classification table", stage_options())
+        .expect_file(result_tsv, file_non_empty, "non-empty")
         .call([this](const std::filesystem::path& src, const std::filesystem::path& dst) {
-            std::string body;
-            try {
-                body = classify_platon_tsv(read_file(src));
-            } catch (const HyplasError&) {
+            auto content = read_file(src);
+            if (!content) return 1;
+            auto body = classify_platon_tsv(*content);
+            if (!body) {
                 if (config_.soft_fail) soft_fail_exit();
                 log("ERROR", "RDS column not found in Platon output");
                 return 1;
             }
             std::ofstream out(dst);
-            if (!out) {
-                log("ERROR", "Cannot open Platon output file");
-                return 1;
-            }
-            out << body;
-            return 0;
+            out << *body;
+            return out ? 0 : 1;
         }, in(result_tsv), out(output_tsv))
         .or_die_if(true);
 
@@ -320,16 +334,9 @@ std::filesystem::path Pipeline::run_minigraph_lr_to_sr(
 
     stage("minigraph LR to SR assembly", stage_options())
         .expect_which("minigraph")
+        .expect_file(sr_graph, file_non_empty, "non-empty")
         // Fix empty segments once per pipeline; redone only when the graph changes.
-        .call([this](const std::filesystem::path& src, const std::filesystem::path& dst) {
-            try {
-                fix_gfa_empty_segments(src, dst);
-                return 0;
-            } catch (const HyplasError& e) {
-                log("ERROR", e.what());
-                return 1;
-            }
-        }, in(sr_graph), out(sr_graph_fix))
+        .call(fix_gfa_empty_segments, in(sr_graph), out(sr_graph_fix))
         .expect_file(sr_graph_fix, file_non_empty, "non-empty")
         .expect_file(reads_fastq, file_non_empty, "non-empty")
         .proc({
@@ -357,7 +364,7 @@ ReadSelectionResult Pipeline::run_long_read_selection(
     const std::filesystem::path& graph_alignment) {
 
     auto plasmid_lr_path = output_dir_ / "plasmid_long_reads";
-    ensure_directory(plasmid_lr_path);
+    require_directory(plasmid_lr_path);
 
     ReadSelectionResult result;
     result.plasmid_reads = plasmid_lr_path / "plasmid.fastq.gz";
@@ -395,7 +402,7 @@ std::filesystem::path Pipeline::find_missing_long_reads(
     int comp_id) {
 
     auto prop_dir = output_dir_ / "prop_lr";
-    ensure_directory(prop_dir);
+    require_directory(prop_dir);
 
     std::string paf_name = (comp_id >= 0)
         ? ("comp_" + std::to_string(comp_id) + ".round." + std::to_string(round) + ".paf")
@@ -477,16 +484,10 @@ std::filesystem::path Pipeline::run_unicycler_lr_assembly(
         return assembly_fasta;
     }
 
-    // Copy SR assembly directory as starting point
-    std::filesystem::copy(unicycler_sr_path, unicycler_lr_path,
-                          std::filesystem::copy_options::recursive |
-                          std::filesystem::copy_options::overwrite_existing);
-
-    // Remove files that will be regenerated
-    remove_if_exists(unicycler_lr_path / "assembly.fasta");
-    remove_if_exists(unicycler_lr_path / "assembly.gfa");
-
     auto lr_stage = stage("unicycler LR assembly iteration " + std::to_string(iteration), stage_options());
+
+    // Start from a copy of the SR assembly directory, minus the files unicycler regenerates.
+    lr_stage.call([&] { return prepare_unicycler_dir(unicycler_sr_path, unicycler_lr_path) ? 0 : 1; });
 
     // Unicycler accepts gzip input. Reuse one stream directly or concatenate
     // gzip members byte-for-byte into stage scratch instead of materializing plain FASTQ.
@@ -536,8 +537,16 @@ std::vector<GfaComponent> Pipeline::extract_plasmid_components(
     const std::filesystem::path& prediction_tsv) const
 {
     // 1. Parse plasmid-classified contigs
-    gtl::flat_hash_set<std::string> plasmid_segs =
-        plasmid_names(parse_prediction_tsv(prediction_tsv));
+    gtl::flat_hash_set<std::string> plasmid_segs;
+    stage("read plasmid predictions")
+        .expect_file(prediction_tsv, file_non_empty, "non-empty")
+        .call([&](const std::filesystem::path& tsv) {
+            auto predictions = parse_prediction_tsv(tsv);
+            if (!predictions) return 1;
+            plasmid_segs = plasmid_names(*predictions);
+            return 0;
+        }, prediction_tsv)
+        .or_die_if(true);
 
     // 2. Union-find over contigs co-aligned by the same long read (from GAF)
     gtl::flat_hash_map<std::string, std::string> parent;
@@ -646,12 +655,15 @@ void Pipeline::init_component_unicycler_sr(
     const std::filesystem::path& comp_dir)
 {
     auto unicycler_sr = comp_dir / "unicycler_sr";
-    ensure_directory(unicycler_sr);
+    require_directory(unicycler_sr);
 
     // Place overlap-removed component GFA as the depth-filter graph.
     // No mock unicycler run — just the graph file, matching setup_from_spades_output.
     // Unicycler will process everything from scratch when given LR reads.
-    remove_gfa_overlaps(comp_gfa, unicycler_sr / "002_depth_filter.gfa");
+    stage("component graph setup", stage_options())
+        .expect_file(comp_gfa, file_non_empty, "non-empty")
+        .call(remove_gfa_overlaps, in(comp_gfa), out(unicycler_sr / "002_depth_filter.gfa"))
+        .or_die_if(true);
 }
 
 std::vector<std::filesystem::path> Pipeline::run_per_component_assembly(
@@ -692,11 +704,10 @@ std::vector<std::filesystem::path> Pipeline::run_per_component_assembly(
 
         // Copy SR dir as starting point for this iteration (mirrors run_unicycler_lr_assembly)
         auto unicycler_sr_comp = cdir / "unicycler_sr";
-        std::filesystem::copy(unicycler_sr_comp, unicycler_comp,
-                              std::filesystem::copy_options::recursive |
-                              std::filesystem::copy_options::overwrite_existing);
-        remove_if_exists(unicycler_comp / "assembly.fasta");
-        remove_if_exists(unicycler_comp / "assembly.gfa");
+        if (!prepare_unicycler_dir(unicycler_sr_comp, unicycler_comp)) {
+            log("WARNING", "Component " + std::to_string(comp.id) + ": cannot prepare assembly directory");
+            continue;
+        }
 
         // Concatenate all accumulated gzipped reads into a persistent component-local
         // file. Gzip streams concatenate natively, so byte concat is valid.
@@ -758,19 +769,21 @@ void Pipeline::merge_circular_contigs(
     int iteration) const
 {
     auto final_path = output_dir_ / ("plasmids.final.it" + std::to_string(iteration) + ".fasta");
-    std::ofstream out(final_path);
-    if (!out) {
-        throw HyplasError("cannot open merged output: " + final_path.string());
-    }
-
-    gtl::flat_hash_set<std::string> written;
-
-    for (const auto& p : fasta_paths) {
-        if (!file_readable(p)) continue;
-        append_circular_by_header(out, p, written);
-    }
-
-    append_circular_sr_plasmids(out, sr_gfa, sr_fasta, prediction_tsv, written);
+    stage("merge circular contigs")
+        .expect_file(sr_gfa)
+        .expect_file(sr_fasta)
+        .expect_file(prediction_tsv)
+        .call([&](const std::filesystem::path& dst) {
+            std::ofstream out(dst);
+            if (!out) return 1;
+            gtl::flat_hash_set<std::string> written;
+            for (const auto& p : fasta_paths) {
+                if (!file_readable(p)) continue;
+                if (append_circular_by_header(out, p, written) != 0) return 1;
+            }
+            return append_circular_sr_plasmids(out, sr_gfa, sr_fasta, prediction_tsv, written);
+        }, final_path)
+        .or_die_if(true);
 }
 
 // ============================================================================
@@ -781,7 +794,7 @@ int Pipeline::run() {
     log("INFO", "Starting HyPlAs pipeline");
     log("INFO", "Output directory: " + output_dir_.string());
 
-    ensure_directory(output_dir_);
+    require_directory(output_dir_);
 
     // 1. SR assembly (or use provided --sr-assembly)
     if (config_.sr_assembly) {
@@ -839,7 +852,7 @@ int Pipeline::run() {
         auto sr_gfa   = output_dir_ / "unicycler_sr" / "assembly.gfa";
         auto sr_fasta = output_dir_ / "unicycler_sr" / "assembly.fasta";
         auto comp_dir = output_dir_ / "components";
-        ensure_directory(comp_dir);
+        require_directory(comp_dir);
 
         std::vector<std::filesystem::path> unknown_files = {
             reads.unmapped, reads.unknown_both, reads.unknown_neither
@@ -892,8 +905,11 @@ int Pipeline::run() {
         // 4. Write component sub-GFAs
         for (const auto& comp : components) {
             auto cdir = comp_dir / ("comp_" + std::to_string(comp.id));
-            ensure_directory(cdir);
-            write_component_gfa(comp.segments, sr_gfa, cdir / "component.gfa");
+            require_directory(cdir);
+            stage("component " + std::to_string(comp.id) + " graph", stage_options())
+                .call([&](const std::filesystem::path& src, const std::filesystem::path& dst) { return write_component_gfa(comp.segments, src, dst); },
+                      in(sr_gfa), out(cdir / "component.gfa"))
+                .or_die_if(true);
         }
 
         // 5. Bin accumulated reads to components using the same plasmid GAF
@@ -910,8 +926,7 @@ int Pipeline::run() {
             stage("component " + std::to_string(comp.id) + " reads", stage_options())
                 .call([&](const std::filesystem::path& pool, const std::filesystem::path& dst) {
                     gtl::flat_hash_set<std::string> ids(it->second.begin(), it->second.end());
-                    write_reads_by_id(pool, ids, dst);
-                    return 0;
+                    return write_reads_by_id(pool, ids, dst);
                 }, in(concat_plasmid), out(comp_lr))
                 .or_die_if(true);
             comp_read_files[comp.id] = {comp_lr};
