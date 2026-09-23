@@ -137,14 +137,15 @@ std::filesystem::path Pipeline::run_unicycler_sr_assembly() {
 
     ensure_directory(unicycler_sr_path);
 
-    auto sr_stage = stage("unicycler SR assembly", stage_options()).expect_which("unicycler_hyplas_modified");
-    for (const auto& sr : config_.short_reads) sr_stage.expect_file(sr, file_non_empty, "non-empty");
-    sr_stage.proc({"unicycler_hyplas_modified",
-                   {"-o", unicycler_sr_path},
-                   {"-t", config_.threads},
-                   {"-1", in(config_.short_reads[0])},
-                   {"-2", in(mate_of(config_.short_reads))},
-                   {"--min_component_size", 10}}, opts)
+    stage("unicycler SR assembly", stage_options())
+        .expect_which("unicycler_hyplas_modified")
+        .expect_file(config_.short_reads, file_non_empty, "non-empty")
+        .proc({"unicycler_hyplas_modified",
+               {"-o", unicycler_sr_path},
+               {"-t", config_.threads},
+               {"-1", in(config_.short_reads[0])},
+               {"-2", in(mate_of(config_.short_reads))},
+               {"--min_component_size", 10}}, opts)
         .expect_file(assembly_gfa, file_non_empty, "non-empty")
         .expect_file(assembly_fasta, file_non_empty, "non-empty")
         .expect_file(assembly_fasta, file_is_fasta, "FASTA")
@@ -166,17 +167,18 @@ std::filesystem::path Pipeline::run_spades_sr_assembly() {
     opts.outputs = {spades_gfa};
 
     // SPAdes with default parameters: -k 99 --gfa11 --isolate -m 1024
-    auto spades_stage = stage("SPAdes SR assembly", stage_options()).expect_which("spades.py");
-    for (const auto& sr : config_.short_reads) spades_stage.expect_file(sr, file_non_empty, "non-empty");
-    spades_stage.proc({"spades.py",
-                       {"-o", spades_path},
-                       {"-t", config_.threads},
-                       {"-k", 99},
-                       "--gfa11",
-                       "--isolate",
-                       {"-m", 1024},
-                       {"-1", in(config_.short_reads[0])},
-                       {"-2", in(mate_of(config_.short_reads))}}, opts)
+    stage("SPAdes SR assembly", stage_options())
+        .expect_which("spades.py")
+        .expect_file(config_.short_reads, file_non_empty, "non-empty")
+        .proc({"spades.py",
+               {"-o", spades_path},
+               {"-t", config_.threads},
+               {"-k", 99},
+               "--gfa11",
+               "--isolate",
+               {"-m", 1024},
+               {"-1", in(config_.short_reads[0])},
+               {"-2", in(mate_of(config_.short_reads))}}, opts)
         .expect_file(spades_gfa, file_non_empty, "non-empty")
         .or_die_if(!config_.soft_fail)
         .or_execute([this]{ soft_fail_exit(); });

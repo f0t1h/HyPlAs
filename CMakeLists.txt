@@ -48,7 +48,7 @@ FetchContent_Declare(gtl
 # shrn: subprocess execution + output verification.
 FetchContent_Declare(shrn
     GIT_REPOSITORY https://github.com/f0t1h/shrn.git
-    GIT_TAG        v0.11.0)
+    GIT_TAG        v0.12.0)
 FetchContent_MakeAvailable(gtl shrn)
 
 # ---------------------------------------------------------------------------
