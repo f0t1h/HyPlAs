@@ -57,7 +57,7 @@ int main(int argc, char* argv[]) {
         ->default_val("INFO");
     
     app.add_flag("--force", config.force,
-        "Force re-run of stages even if outputs exist");
+        "Re-run every step, including those whose outputs are newer than their inputs");
     
     // Assembly options
     app.add_flag("--use-spades", config.use_spades,

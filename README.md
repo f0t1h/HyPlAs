@@ -1,8 +1,8 @@
 
 # HyPlas
-HyplAs is a tool aimed at assembling plasmids from hybid short-read and long-read sequencing data for bacerial isolates.
-HyPlAs main novlty is to incorporate a plasmid classification tools (Such as platon) on short-read assembled contigs to aid plasmidic long-read selection and performs hybrid plasmids assembly.
-HyPlAs has been desiged to work with single genome sequencing data, and has not been tested on metagenomics data.  
+HyPlAs is a tool for assembling plasmids from hybrid short- and long-read sequencing data from bacterial isolates.
+HyPlAs's main novelty is its use of a plasmid classification tool (such as platon) on short-read assembled contigs to guide plasmidic long-read selection and hybrid plasmid assembly.
+HyPlAs is designed to work with single-genome sequencing data and has not been tested on metagenomic data.  
 
 ## Installation
 
@@ -50,19 +50,18 @@ apptainer build hyplas.sif Apptainer.def
 
 ## Overview
 
-HyPlAs is a pipeline combining existing tools and the C++ `hyplas` binary.
-HyPlAs is composed of
-the following steps (see figure below): 
-1. Reads preprocessing;  
+HyPlAs is a pipeline that combines existing tools with the C++ `hyplas` binary.
+It consists of the following steps (see the figure below): 
+1. Read preprocessing;  
 	1.a. Short reads are preprocessed with <a href="https://github.com/OpenGene/fastp">fastp</a>,  
     	1.b. Long reads are preprocessed with <a href="https://github.com/wdecoster/chopper">chopper</a>;  
-3. Short reads are assembled using <a href="https://github.com/rrwick/Unicycler">Unicycler</a>;
-4. The detection of putative plasmidic long reads is done in four stages:  
-	3.a. the plasmid contigs classification tool <a href="https://github.com/oschwengers/platon">Platon</a> is used to detect plasmidic short-read contigs,  
-	3.b. long reads are mapped to the assembly graph using <a href="https://github.com/lh3/minigraph">minigraph</a>,  
-   	3.c. long-read mapping to short-read contigs and platon results are used to select an initial set of putative plasmidic long reads,  
-   	3.d. the set of putative plasmidic long reads is augmented by iteratively detecting overlapping long reads;  
-5. The full short-read assembly graph generated in step 2 is refined with the plasmidic long reads selected during step 3, using Unicycler.
+2. Short reads are assembled using <a href="https://github.com/rrwick/Unicycler">Unicycler</a>;
+3. Putative plasmidic long reads are detected in four stages:  
+	3.a. The plasmid-contig classification tool <a href="https://github.com/oschwengers/platon">Platon</a> is used to detect plasmidic short-read contigs,  
+	3.b. Long reads are mapped to the assembly graph using <a href="https://github.com/lh3/minigraph">minigraph</a>,  
+   	3.c. Long-read mappings to short-read contigs and Platon results are used to select an initial set of putative plasmidic long reads,  
+   	3.d. The set of putative plasmidic long reads is augmented by iteratively detecting overlapping long reads;  
+4. The full short-read assembly graph generated in step 2 is refined with the plasmidic long reads selected during step 3, using Unicycler.
 
 ![HyPlAs](resources/HyPlAs_pipeline.png?raw=true)
 
@@ -78,19 +77,44 @@ Or run the full QC + assembly + reporting workflow with Nextflow (see `main.nf`)
 nextflow run main.nf --samples samplesheet.csv --platonDb db --outdir results
 ```
 ### Input
- - --platon-db: Database used by Platon (<a href="https://zenodo.org/record/4066768/files/db.tar.gz">https://zenodo.org/record/4066768/files/db.tar.gz</a>)
- ```
+- `--platon-db`: Database used by Platon (<a href="https://zenodo.org/record/4066768/files/db.tar.gz">https://zenodo.org/record/4066768/files/db.tar.gz</a>)
+```
 wget https://zenodo.org/record/4066768/files/db.tar.gz
 tar -xzf db.tar.gz
 rm db.tar.gz
 # Move the database to a suitable location
 ```
-- -s space separated short read files
-- -l long reads file (required to be gzipped)
-- -o output folder
-- -p number of long-read recovery rounds to be executed (Recommend 2 rounds)
+- `-s`: Space-separated short-read files
+- `-l`: Long-read file (must be gzipped)
+- `-o`: Output folder
+- `-p`: Number of long-read recovery rounds to run (recommended: 2)
+- `-t`: Number of threads (default: 16)
+- `--sr-assembly`: Use a pre-computed short-read assembly graph instead of running Unicycler
+- `--use-spades`: Assemble short reads with SPAdes instead of Unicycler
+- `--per-component`: Bin contigs into graph components and run the hybrid assembly per component
+- `--soft-fail`: On a failed hybrid assembly, fall back to the circular short-read contigs instead of exiting
+- `--force`: Re-run every step (see below)
+- `--keep-temp`: Keep each step's scratch directory under `<output>/tmp`
 
-## Example run.
+### Resuming a run
+
+Re-running HyPlAs on an existing output folder redoes only work that is out of
+date. Each step declares the files it reads and writes; a step is skipped when
+all of its outputs exist and none is older than any of its inputs, just as
+`make` decides. Changing an input (for example, re-running QC on the reads)
+therefore re-runs the short-read assembly and everything downstream, while an
+interrupted run picks up where it stopped. The covered steps are the short-read
+assembly, Platon classification, minigraph alignment, initial read selection,
+and missing-read extraction. Long-read recovery rounds and hybrid assemblies
+are re-used whenever their output exists; pass `--force` to redo them, or
+delete the corresponding `prop_lr/` or `unicycler_lr_*` entries.
+
+`--force` re-runs every step regardless of timestamps. Scratch files for each
+step live in a private directory under `<output>/tmp` and are removed when the
+step finishes; `--keep-temp` keeps them, and the path is logged at the end of
+each step that used one.
+
+## Example run
 
 ### Download long and short reads from SRA (SAMN05238672)
 ```
@@ -116,20 +140,20 @@ hyplas -l SRR10173103.qc.fastq.gz -s SRR3666207_1.qc.fastq SRR3666207_2.qc.fastq
 ```
 
 ### Output
-HyPlAs creates in the output folder the following files and directories:  
+HyPlAs creates the following files and directories in the output folder:  
 - plasmids.final.it{iteration}.fasta:   
-	- assembled plasmids, in FASTA format; iteration numbers 0 to {-p} results of each long-read recovery rounds settings.
+	- Assembled plasmids in FASTA format; iteration numbers 0 to {-p} are the results of each long-read recovery-round setting.
 - unicycler_sr (directory):  
-	- short-read-only assembly by Unicycler;  
+	- Short-read-only assembly by Unicycler;  
 - classify (directory):  
 	- classify/result.log: Platon log file,  
-	- classify/result.json: Platon classification details of the short-read assembly contigs in json format,  
-	- classify/result.tsv: Platon classification details of the short-read assembly contigs in tsv format,  
+	- classify/result.json: Platon classification details for the short-read assembly contigs in JSON format,  
+	- classify/result.tsv: Platon classification details for the short-read assembly contigs in TSV format,  
 	- classify/result_p.tsv: List of contigs predicted by Platon as plasmidic or chromosomal;  
-- lr2assembly.gaf: Graph alignment of long reads to the short-read-only assembly cotigs;  
-- plasmid_long_reads/plasmid.fastq.gz: Long-reads classified as plasmidic by HyPlAs, in FASTQ format;  
+- lr2assembly.gaf: Graph alignment of long reads to the short-read-only assembly contigs;  
+- plasmid_long_reads/plasmid.fastq.gz: Long reads classified as plasmidic by HyPlAs, in FASTQ format;  
 - prop_lr/ (directory):
-	- prop_lr/lr.round.[0-9]+.paf: Mappings of the known plasmid long-reads to unknown long-reads, the integer suffix indicates the iteration round of plasmidic long-reads augmentation (step 3.d),  
+	- prop_lr/lr.round.[0-9]+.paf: Mappings of known plasmid long reads to unknown long reads; the integer suffix indicates the iteration round of plasmidic long-read augmentation (step 3.d),  
 	- prop_lr/lr.round.[0-9]+.fastq.gz: Plasmidic long-read sequences recovered in augmentation round X (X in [0-9]);  
 - unicycler_lr_{iteration} (directories):  
-	- Outputs of the final Unicycler hybrid assembly using the short-read--only assembly and the predicted plasmdic long reads for each iteration.  
+	- Outputs of the final Unicycler hybrid assembly using the short-read-only assembly and predicted plasmidic long reads for each iteration.  
