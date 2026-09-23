@@ -76,6 +76,16 @@ Or run the full QC + assembly + reporting workflow with Nextflow (see `main.nf`)
 ```bash
 nextflow run main.nf --samples samplesheet.csv --platonDb db --outdir results
 ```
+
+The samplesheet is a CSV with a header and one row per isolate. All four
+columns are required:
+
+```csv
+sample_id,sr1,sr2,lr
+isolate01,reads/isolate01_R1.fastq.gz,reads/isolate01_R2.fastq.gz,reads/isolate01_ont.fastq.gz
+isolate02,reads/isolate02_R1.fastq.gz,reads/isolate02_R2.fastq.gz,reads/isolate02_ont.fastq.gz
+```
+
 ### Input
 - `--platon-db`: Database used by Platon (<a href="https://zenodo.org/record/4066768/files/db.tar.gz">https://zenodo.org/record/4066768/files/db.tar.gz</a>)
 ```
