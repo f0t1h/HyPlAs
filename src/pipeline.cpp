@@ -45,6 +45,13 @@ int check_dependencies(bool use_spades) {
 // Pipeline class implementation
 // ============================================================================
 
+namespace {
+/// The second read file when short reads are paired; absent otherwise.
+std::optional<std::filesystem::path> mate_of(const std::vector<std::filesystem::path>& reads) {
+    return reads.size() > 1 ? std::optional(reads[1]) : std::nullopt;
+}
+}  // namespace
+
 Pipeline::Pipeline(const PipelineConfig& config)
     : config_(config)
     , output_dir_(config.output_directory) {
@@ -125,28 +132,19 @@ std::filesystem::path Pipeline::run_unicycler_sr_assembly() {
     auto assembly_fasta = unicycler_sr_path / "assembly.fasta";
 
     // unicycler writes into -o; declare its outputs so a fresh assembly is not redone.
-    RunOptions deps;
-    deps.inputs = config_.short_reads;
-    deps.outputs = {assembly_gfa, assembly_fasta};
+    RunOptions opts;
+    opts.outputs = {assembly_gfa, assembly_fasta};
 
     ensure_directory(unicycler_sr_path);
 
-    std::vector<std::string> cmd = {
-        "unicycler_hyplas_modified",
-        "-o", unicycler_sr_path.string(),
-        "-t", std::to_string(config_.threads),
-        "-1", config_.short_reads[0].string(),
-        "--min_component_size", "10"
-    };
-
-    if (config_.short_reads.size() > 1) {
-        cmd.emplace_back("-2");
-        cmd.emplace_back(config_.short_reads[1].string());
-    }
-
     auto sr_stage = stage("unicycler SR assembly", stage_options()).expect_which("unicycler_hyplas_modified");
     for (const auto& sr : config_.short_reads) sr_stage.expect_file(sr, file_non_empty, "non-empty");
-    sr_stage.proc(cmd, deps)
+    sr_stage.proc({"unicycler_hyplas_modified",
+                   {"-o", unicycler_sr_path},
+                   {"-t", config_.threads},
+                   {"-1", in(config_.short_reads[0])},
+                   {"-2", in(mate_of(config_.short_reads))},
+                   {"--min_component_size", 10}}, opts)
         .expect_file(assembly_gfa, file_non_empty, "non-empty")
         .expect_file(assembly_fasta, file_non_empty, "non-empty")
         .expect_file(assembly_fasta, file_is_fasta, "FASTA")
@@ -164,30 +162,21 @@ std::filesystem::path Pipeline::run_spades_sr_assembly() {
     ensure_directory(spades_path);
     ensure_directory(unicycler_sr_path);
 
-    RunOptions deps;
-    deps.inputs = config_.short_reads;
-    deps.outputs = {spades_gfa};
+    RunOptions opts;
+    opts.outputs = {spades_gfa};
 
-    // Run SPAdes with default parameters: -k 99 --gfa11 --isolate -m 1024
-    std::vector<std::string> cmd = {
-        "spades.py",
-        "-o", spades_path.string(),
-        "-t", std::to_string(config_.threads),
-        "-k", "99",
-        "--gfa11",
-        "--isolate",
-        "-m", "1024",
-        "-1", config_.short_reads[0].string()
-    };
-
-    if (config_.short_reads.size() > 1) {
-        cmd.emplace_back("-2");
-        cmd.emplace_back(config_.short_reads[1].string());
-    }
-
+    // SPAdes with default parameters: -k 99 --gfa11 --isolate -m 1024
     auto spades_stage = stage("SPAdes SR assembly", stage_options()).expect_which("spades.py");
     for (const auto& sr : config_.short_reads) spades_stage.expect_file(sr, file_non_empty, "non-empty");
-    spades_stage.proc(cmd, deps)
+    spades_stage.proc({"spades.py",
+                       {"-o", spades_path},
+                       {"-t", config_.threads},
+                       {"-k", 99},
+                       "--gfa11",
+                       "--isolate",
+                       {"-m", 1024},
+                       {"-1", in(config_.short_reads[0])},
+                       {"-2", in(mate_of(config_.short_reads))}}, opts)
         .expect_file(spades_gfa, file_non_empty, "non-empty")
         .or_die_if(!config_.soft_fail)
         .or_execute([this]{ soft_fail_exit(); });
@@ -269,8 +258,8 @@ std::filesystem::path Pipeline::run_platon_classifier() {
     auto platon_path = output_dir_ / "classify";
     auto result_tsv = platon_path / "result.tsv";
 
-    RunOptions deps;
-    deps.outputs = {result_tsv};
+    RunOptions opts;
+    opts.outputs = {result_tsv};
     stage("platon classification", stage_options())
         .expect_which("platon")
         .expect_file(unicycler_fasta, file_non_empty, "non-empty")
@@ -282,7 +271,7 @@ std::filesystem::path Pipeline::run_platon_classifier() {
             "--prefix", "result",
             "--output", platon_path.string(),
             in(unicycler_fasta)
-        }, deps)
+        }, opts)
         .expect_file(result_tsv, file_non_empty, "non-empty")
         .or_die_if(true);
 
@@ -507,31 +496,27 @@ std::filesystem::path Pipeline::run_unicycler_lr_assembly(
         lr_stage.call([&] { return concat_files_binary(plasmid_files, lr_input) ? 0 : 1; });
     }
 
-    std::vector<std::string> cmd = {
-        "unicycler_hyplas_modified",
-        "--verbosity", "1",
-        "--keep", "3",
-        "-o", unicycler_lr_path.string(),
-        "-t", std::to_string(config_.threads),
-        "-l", lr_input.string()
-    };
-
     // Short reads, or empty placeholders when none were provided.
+    std::optional<std::filesystem::path> sr1, sr2;
     if (config_.short_reads.empty()) {
-        auto empty_fq1 = lr_stage.temp_path("empty_sr1.fq");
-        auto empty_fq2 = lr_stage.temp_path("empty_sr2.fq");
-        lr_stage.call([&] { return (std::ofstream(empty_fq1) && std::ofstream(empty_fq2)) ? 0 : 1; });
-        cmd.insert(cmd.end(), {"-1", empty_fq1.string(), "-2", empty_fq2.string()});
+        sr1 = lr_stage.temp_path("empty_sr1.fq");
+        sr2 = lr_stage.temp_path("empty_sr2.fq");
+        lr_stage.call([&] { return (std::ofstream(*sr1) && std::ofstream(*sr2)) ? 0 : 1; });
     } else {
-        cmd.insert(cmd.end(), {"-1", config_.short_reads[0].string()});
-        if (config_.short_reads.size() > 1) {
-            cmd.insert(cmd.end(), {"-2", config_.short_reads[1].string()});
-        }
+        sr1 = config_.short_reads[0];
+        sr2 = mate_of(config_.short_reads);
     }
 
     lr_stage.expect_which("unicycler_hyplas_modified")
         .expect_file(lr_input)
-        .proc(cmd)
+        .proc({"unicycler_hyplas_modified",
+               {"--verbosity", 1},
+               {"--keep", 3},
+               {"-o", unicycler_lr_path},
+               {"-t", config_.threads},
+               {"-l", in(lr_input)},
+               {"-1", in(sr1)},
+               {"-2", in(sr2)}})
         .expect_file(assembly_fasta, file_is_fasta, "FASTA")
         .or_die_if(!config_.soft_fail)
         .or_execute([this]{ soft_fail_exit(); });
@@ -724,26 +709,14 @@ std::vector<std::filesystem::path> Pipeline::run_per_component_assembly(
             }
         }
 
-        std::vector<std::string> cmd = {
-            "unicycler_hyplas_modified",
-            "--verbosity", "1",
-            "--keep", "3",
-            "-o", unicycler_comp.string(),
-            "-t", std::to_string(config_.threads),
-            "-l", lr_input.string()
-        };
-
-        std::filesystem::path empty_fq;
+        std::optional<std::filesystem::path> sr1, sr2;
         if (config_.short_reads.empty()) {
-            empty_fq = cdir / "empty.fq";
+            auto empty_fq = cdir / "empty.fq";
             std::ofstream{empty_fq};
-            cmd.emplace_back("-1"); cmd.emplace_back(empty_fq.string());
-            cmd.emplace_back("-2"); cmd.emplace_back(empty_fq.string());
+            sr1 = sr2 = empty_fq;
         } else {
-            cmd.emplace_back("-1"); cmd.emplace_back(config_.short_reads[0].string());
-            if (config_.short_reads.size() > 1) {
-                cmd.emplace_back("-2"); cmd.emplace_back(config_.short_reads[1].string());
-            }
+            sr1 = config_.short_reads[0];
+            sr2 = mate_of(config_.short_reads);
         }
 
         log("INFO", "Assembling component " + std::to_string(comp.id) +
@@ -753,7 +726,14 @@ std::vector<std::filesystem::path> Pipeline::run_per_component_assembly(
         stage("unicycler component " + std::to_string(comp.id))
             .expect_which("unicycler_hyplas_modified")
             .expect_file(lr_input)
-            .proc(cmd)
+            .proc({"unicycler_hyplas_modified",
+                   {"--verbosity", 1},
+                   {"--keep", 3},
+                   {"-o", unicycler_comp},
+                   {"-t", config_.threads},
+                   {"-l", in(lr_input)},
+                   {"-1", in(sr1)},
+                   {"-2", in(sr2)}})
             .expect_file(assembly_fasta, file_is_fasta, "FASTA")
             .or_die_if(!config_.soft_fail)
             .or_execute([this, &comp](){
